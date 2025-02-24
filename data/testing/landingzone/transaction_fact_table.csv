@@ -1,0 +1,6 @@
+transaction_id,amount,product_fk
+1,5,1
+2,10,1
+3,20,2
+4,1,3
+5,-1,3
