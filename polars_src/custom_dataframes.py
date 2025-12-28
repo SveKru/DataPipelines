@@ -357,7 +357,7 @@ class CustomDF(DataReader):
             None. The method updates the DataFrame in-place.
         """
         for column in column_list:
-            self._df = self._df.with_columns(column, pl.col(column).cast(data_type))
+            self._df = self._df.with_columns(pl.col(column).cast(data_type))
 
     def custom_join(
         self, custom_other: "CustomDF", custom_on: str = None, custom_left_on: str = None, custom_right_on: str = None, custom_how: str = None

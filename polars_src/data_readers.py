@@ -1,6 +1,8 @@
 import polars as pl
+import json
 from pathlib import Path
 from typing import Dict, Optional
+from jsonpath_ng import  parse
 
 from polars_src.dataframe_helpers import clean_column_names, create_map_column
 
@@ -83,6 +85,8 @@ class DataReader:
                 df =  self._read_csv()
             elif file_format == "parquet":
                 df = self._read_parquet()
+            elif file_format == "json":
+                df = self._read_json()
             else:
                 raise ValueError(f"Unsupported file format: {file_format}")
         
@@ -147,4 +151,52 @@ class DataReader:
             
         except Exception as e:
             raise ValueError(f"Error reading Parquet file: {str(e)}") from e
+        
+    def _read_json(self) -> pl.DataFrame:
+        """
+        Read data from JSON files.
+        
+        Returns:
+            pl.DataFrame: DataFrame containing the JSON data
+        """
+        
+        try:
+            if self._data_path.endswith('.json'):
+                df = pl.read_json(
+                    self._data_path,
+                    schema=self._schema['columns'],
+                )
+                return df
+            else:
+                # Read and concatenate all JSON files in the directory
+                all_data = []
+                for json_file in Path(self._data_path).glob('*.json'):
+                    with open(json_file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    data_path = self._schema.get('json_data_path', '')
+
+                    if data_path:
+                        json_data = parse(data_path).find(data)
+                        for result in json_data:
+                            if isinstance(result.value, list):
+                                for subresult in result.value:
+                                    sub_dict = {"file_name": json_file.name}
+                                    for col_value in self._schema['columns'].keys():
+                                        sub_dict[col_value] = subresult.get(col_value, None)
+                                    all_data.append(sub_dict)
+                            else:
+                                sub_dict = {"file_name": json_file.name}
+                                for col_value in self._schema['columns'].keys():
+                                    sub_dict[col_value] = result.value.get(col_value, None)
+                                all_data.append(sub_dict)
+                    else:
+                        all_data.append(data)
+                schema_cols = self._schema['columns']
+                schema_cols['file_name'] = pl.String
+                df = pl.DataFrame(all_data, schema=schema_cols)
+            
+            return df
+            
+        except Exception as e:
+            raise ValueError(f"Error reading JSON file: {str(e)}") from e
 
