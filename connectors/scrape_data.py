@@ -22,9 +22,9 @@ def save_json_to_file(json_data, file_path):
         json.dump(json_data, file, indent=4)
 
 
-def json_file_exists(uuid):
+def json_file_exists(uuid,writing_path):
     """Check if the JSON file for the given UUID already exists."""
-    data_dir = "data/json"
+    data_dir = os.path.join(writing_path, "data")
     file_path = os.path.join(data_dir, f"{uuid}.json")
     return os.path.exists(file_path)
 
@@ -109,7 +109,7 @@ def data_scraper(
         if uuids:
             # Step 2: Use each UUID to fetch game data from the API
             for uuid in uuids:
-                if json_file_exists(uuid):
+                if json_file_exists(uuid, writing_path):
                     print(f"JSON file for UUID {uuid} already exists. Skipping...")
                     continue
 
@@ -126,7 +126,7 @@ def data_scraper(
                 os.makedirs(f"{writing_path}/mapping", exist_ok=True)
                 with open(f"{writing_path}/mapping/query_args.json", "a", encoding="utf-8") as file:
                     json.dump(initial_args, file)
-                    file.write(",\n")
+                    file.write("\n")
 
                 game_data = fetch_game_data(api_url, uuid, writing_path)
 

@@ -260,6 +260,8 @@ def get_landingzone_schema(table_name: str = '') -> dict:
             "uuid": pl.String,
             "actorId": pl.String,
             "teamId": pl.String,
+            'gamePlayed':pl.String,
+            'timePlayed':pl.String,
             "data": pl.Struct(
                 {
                 'score':pl.Int64,
@@ -311,7 +313,7 @@ def get_landingzone_schema(table_name: str = '') -> dict:
         'quality_checks': [],
         'json_data_path': '$.teams[*]'
         },
-        'playergameshotsdata_landingzone':{
+        'playergameshotsdata2ptmade_landingzone':{
         'columns':{
             "uuid": pl.String,
             "actorId": pl.String,
@@ -326,6 +328,23 @@ def get_landingzone_schema(table_name: str = '') -> dict:
                         'ynormalize':pl.Decimal(25,10),
                     }
                 )),
+                }
+            ),
+        },
+        'container': 'landingzone',
+        'location': 'scraping/data',
+        'file_format': 'json',
+        'partition_column': '',
+        'quality_checks': [],
+        'json_data_path': '$.teams[*].players[*]'
+        },
+        'playergameshotsdata3ptmade_landingzone':{
+        'columns':{
+            "uuid": pl.String,
+            "actorId": pl.String,
+            "teamId": pl.String,
+            "data": pl.Struct(
+                {
                 'shootingOfThreeSuccessfulPoint':pl.List(pl.Struct(
                     {
                         'period':pl.Int64,
@@ -334,6 +353,23 @@ def get_landingzone_schema(table_name: str = '') -> dict:
                         'ynormalize':pl.Decimal(25,10),
                     }
                 )),
+                }
+            ),
+        },
+        'container': 'landingzone',
+        'location': 'scraping/data',
+        'file_format': 'json',
+        'partition_column': '',
+        'quality_checks': [],
+        'json_data_path': '$.teams[*].players[*]'
+        },
+        'playergameshotsdata2ptmissed_landingzone':{
+        'columns':{
+            "uuid": pl.String,
+            "actorId": pl.String,
+            "teamId": pl.String,
+            "data": pl.Struct(
+                {
                 'shootingOfTwoFailedPoint':pl.List(pl.Struct(
                     {
                         'period':pl.Int64,
@@ -342,6 +378,23 @@ def get_landingzone_schema(table_name: str = '') -> dict:
                         'ynormalize':pl.Decimal(25,10),
                     }
                 )),
+                }
+            ),
+        },
+        'container': 'landingzone',
+        'location': 'scraping/data',
+        'file_format': 'json',
+        'partition_column': '',
+        'quality_checks': [],
+        'json_data_path': '$.teams[*].players[*]'
+        },
+        'playergameshotsdata3ptmissed_landingzone':{
+        'columns':{
+            "uuid": pl.String,
+            "actorId": pl.String,
+            "teamId": pl.String,
+            "data": pl.Struct(
+                {
                 'shootingOfThreeFailedPoint':pl.List(pl.Struct(
                     {
                         'period':pl.Int64,
@@ -359,6 +412,44 @@ def get_landingzone_schema(table_name: str = '') -> dict:
         'partition_column': '',
         'quality_checks': [],
         'json_data_path': '$.teams[*].players[*]'
+        },
+        'gameteamscoresdata_landingzone':{
+            'columns':{
+                "score":pl.List(
+                    pl.Struct(
+                    {
+                    'local':pl.Int64,
+                    'visit':pl.Int64,
+                    'minuteQuarter':pl.String,
+                    'minuteAbsolute':pl.String,
+                    'period':pl.String,
+                    }
+                )
+            )
+            },
+        'container': 'landingzone',
+        'location': 'scraping/data',
+        'file_format': 'json',
+        'partition_column': '',
+        'quality_checks': [],
+        'json_data_path': '$'
+        },
+        'gamedatametadata_landingzone':{
+            'columns':{
+                'year':pl.String,
+                'competition_code':pl.String,
+                'phase':pl.String,
+                'group':pl.String,
+                'long_name':pl.String,
+                'uuid':pl.String,
+
+            },
+        'container': 'landingzone',
+        'location': 'scraping/mapping/query_args.json',
+        'file_format': 'json',
+        'partition_column': '',
+        'quality_checks': [],
+        'json_data_path': '$'
         },
 
     }

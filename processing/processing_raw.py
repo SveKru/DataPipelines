@@ -99,6 +99,8 @@ def generate_table_raw(table_name:str) -> bool:
             'shotsOfTwoSuccessful',
             'shotsOfThreeAttempted',
             'shotsOfThreeSuccessful',
+            'gamePlayed',
+            'timePlayed',
             'rebounds',
             'assists',
             'steals',
@@ -106,9 +108,10 @@ def generate_table_raw(table_name:str) -> bool:
             'valoration',
             'idMatchIntern',
             ])
+        playergamestatsdata_landingzone.convert_data_types(['gamePlayed','timePlayed'],pl.Int16)
 
         playergamestatsdata_raw = CustomDF('playergamestatsdata_raw',initial_df=playergamestatsdata_landingzone.data)
-        playergamestatsdata_raw.write_table()#
+        playergamestatsdata_raw.write_table()
 
     elif table_name == 'teamgamestatsdata_raw':
         teamgamestatsdata_landingzone = CustomDF('teamgamestatsdata_landingzone')
@@ -136,8 +139,8 @@ def generate_table_raw(table_name:str) -> bool:
         teamgamestatsdata_raw = CustomDF('teamgamestatsdata_raw',initial_df=teamgamestatsdata_landingzone.data)
         teamgamestatsdata_raw.write_table()
 
-    elif table_name == 'playergameshotsdata_raw':
-        playergameshotsdata_landingzone = CustomDF('playergameshotsdata_landingzone')
+    elif table_name == 'playergameshotsdata2ptmade_raw':
+        playergameshotsdata_landingzone = CustomDF('playergameshotsdata2ptmade_landingzone')
         playergameshotsdata_landingzone.data = playergameshotsdata_landingzone.data.with_columns(pl.col('file_name').str.replace(".json","").alias('game_uuid'))
         playergameshotsdata_landingzone.data = playergameshotsdata_landingzone.data.with_columns(pl.col('uuid').alias('player_uuid'))
         playergameshotsdata_landingzone.data = playergameshotsdata_landingzone.data.unnest('data')
@@ -145,22 +148,9 @@ def generate_table_raw(table_name:str) -> bool:
         twopoints_made.data = twopoints_made.data.explode('shootingOfTwoSuccessfulPoint').unnest('shootingOfTwoSuccessfulPoint')
         twopoints_made.data = twopoints_made.data.with_columns(pl.lit('2PT').alias('shot_type'))
         twopoints_made.data = twopoints_made.data.with_columns(pl.lit('made').alias('outcome'))
-        threepoints_made = playergameshotsdata_landingzone.custom_select(['player_uuid','game_uuid','shootingOfThreeSuccessfulPoint'])
-        threepoints_made.data = threepoints_made.data.explode('shootingOfThreeSuccessfulPoint').unnest('shootingOfThreeSuccessfulPoint')
-        threepoints_made.data = threepoints_made.data.with_columns(pl.lit('3PT').alias('shot_type'))
-        threepoints_made.data = threepoints_made.data.with_columns(pl.lit('made').alias('outcome'))
-        twopoints_failed = playergameshotsdata_landingzone.custom_select(['player_uuid','game_uuid','shootingOfTwoFailedPoint'])
-        twopoints_failed.data = twopoints_failed.data.explode('shootingOfTwoFailedPoint').unnest('shootingOfTwoFailedPoint')
-        twopoints_failed.data = twopoints_failed.data.with_columns(pl.lit('2PT').alias('shot_type'))
-        twopoints_failed.data = twopoints_failed.data.with_columns(pl.lit('missed').alias('outcome'))
-        threepoints_failed = playergameshotsdata_landingzone.custom_select(['player_uuid','game_uuid','shootingOfThreeFailedPoint'])
-        threepoints_failed.data = threepoints_failed.data.explode('shootingOfThreeFailedPoint').unnest('shootingOfThreeFailedPoint')
-        threepoints_failed.data = threepoints_failed.data.with_columns(pl.lit('3PT').alias('shot_type'))
-        threepoints_failed.data = threepoints_failed.data.with_columns(pl.lit('missed').alias('outcome'))
-        total_df = twopoints_made
-        total_df.data = twopoints_made.data.vstack(threepoints_made.data).vstack(twopoints_failed.data).vstack(threepoints_failed.data).unique()
-        total_df.data = total_df.data.with_columns(pl.col('min').cast(pl.Int64).alias('minute'))
-        total_df = total_df.custom_select([
+
+        twopoints_made.data = twopoints_made.data.with_columns(pl.col('min').cast(pl.Int64).alias('minute')).unique()
+        twopoints_made = twopoints_made.custom_select([
             'game_uuid',
             'player_uuid',
             'shot_type',
@@ -170,9 +160,113 @@ def generate_table_raw(table_name:str) -> bool:
             'ynormalize',
             'outcome'
             ])
+        twopoints_made.data = twopoints_made.data.filter(pl.col('xnormalize').is_not_null() & pl.col('ynormalize').is_not_null())
 
-        playergameshotsdata_raw = CustomDF('playergameshotsdata_raw',initial_df=total_df.data)
+        playergameshotsdata_raw = CustomDF('playergameshotsdata2ptmade_raw',initial_df=twopoints_made.data)
         playergameshotsdata_raw.write_table()
+    elif table_name == 'playergameshotsdata3ptmade_raw':
+        playergameshotsdata_landingzone = CustomDF('playergameshotsdata3ptmade_landingzone')
+        playergameshotsdata_landingzone.data = playergameshotsdata_landingzone.data.with_columns(pl.col('file_name').str.replace(".json","").alias('game_uuid'))
+        playergameshotsdata_landingzone.data = playergameshotsdata_landingzone.data.with_columns(pl.col('uuid').alias('player_uuid'))
+        playergameshotsdata_landingzone.data = playergameshotsdata_landingzone.data.unnest('data')
+
+
+        threepoints_made = playergameshotsdata_landingzone.custom_select(['player_uuid','game_uuid','shootingOfThreeSuccessfulPoint'])
+        threepoints_made.data = threepoints_made.data.explode('shootingOfThreeSuccessfulPoint').unnest('shootingOfThreeSuccessfulPoint')
+        threepoints_made.data = threepoints_made.data.with_columns(pl.lit('3PT').alias('shot_type'))
+        threepoints_made.data = threepoints_made.data.with_columns(pl.lit('made').alias('outcome'))
+        threepoints_made.data = threepoints_made.data.with_columns(pl.col('min').cast(pl.Int64).alias('minute')).unique()
+        threepoints_made = threepoints_made.custom_select([
+            'game_uuid',
+            'player_uuid',
+            'shot_type',
+            'period',
+            'minute',
+            'xnormalize',
+            'ynormalize',
+            'outcome'
+            ])
+        threepoints_made.data = threepoints_made.data.filter(pl.col('xnormalize').is_not_null() & pl.col('ynormalize').is_not_null())
+        playergameshotsdata_raw = CustomDF('playergameshotsdata3ptmade_raw',initial_df=threepoints_made.data)
+        playergameshotsdata_raw.write_table()
+
+
+    elif table_name == 'playergameshotsdata2ptmissed_raw':
+        playergameshotsdata_landingzone = CustomDF('playergameshotsdata2ptmissed_landingzone')
+        playergameshotsdata_landingzone.data = playergameshotsdata_landingzone.data.with_columns(pl.col('file_name').str.replace(".json","").alias('game_uuid'))
+        playergameshotsdata_landingzone.data = playergameshotsdata_landingzone.data.with_columns(pl.col('uuid').alias('player_uuid'))
+        playergameshotsdata_landingzone.data = playergameshotsdata_landingzone.data.unnest('data')
+        twopoints_failed = playergameshotsdata_landingzone.custom_select(['player_uuid','game_uuid','shootingOfTwoFailedPoint'])
+        twopoints_failed.data = twopoints_failed.data.explode('shootingOfTwoFailedPoint').unnest('shootingOfTwoFailedPoint')
+        twopoints_failed.data = twopoints_failed.data.with_columns(pl.lit('2PT').alias('shot_type'))
+        twopoints_failed.data = twopoints_failed.data.with_columns(pl.lit('missed').alias('outcome'))
+        twopoints_failed.data = twopoints_failed.data.with_columns(pl.col('min').cast(pl.Int64).alias('minute')).unique()
+        twopoints_failed = twopoints_failed.custom_select([
+            'game_uuid',
+            'player_uuid',
+            'shot_type',
+            'period',
+            'minute',
+            'xnormalize',
+            'ynormalize',
+            'outcome'
+            ])
+        twopoints_failed.data = twopoints_failed.data.filter(pl.col('xnormalize').is_not_null() & pl.col('ynormalize').is_not_null())
+
+        playergameshotsdata_raw = CustomDF('playergameshotsdata2ptmissed_raw',initial_df=twopoints_failed.data)
+        playergameshotsdata_raw.write_table()
+
+    elif table_name == 'playergameshotsdata3ptmissed_raw':
+        playergameshotsdata_landingzone = CustomDF('playergameshotsdata3ptmissed_landingzone')
+        playergameshotsdata_landingzone.data = playergameshotsdata_landingzone.data.with_columns(pl.col('file_name').str.replace(".json","").alias('game_uuid'))
+        playergameshotsdata_landingzone.data = playergameshotsdata_landingzone.data.with_columns(pl.col('uuid').alias('player_uuid'))
+        playergameshotsdata_landingzone.data = playergameshotsdata_landingzone.data.unnest('data')
+        threepoints_failed = playergameshotsdata_landingzone.custom_select(['player_uuid','game_uuid','shootingOfThreeFailedPoint'])
+        threepoints_failed.data = threepoints_failed.data.explode('shootingOfThreeFailedPoint').unnest('shootingOfThreeFailedPoint')
+        threepoints_failed.data = threepoints_failed.data.with_columns(pl.lit('3PT').alias('shot_type'))
+        threepoints_failed.data = threepoints_failed.data.with_columns(pl.lit('missed').alias('outcome'))
+        threepoints_failed.data = threepoints_failed.data.with_columns(pl.col('min').cast(pl.Int64).alias('minute')).unique()
+        threepoints_failed = threepoints_failed.custom_select([
+            'game_uuid',
+            'player_uuid',
+            'shot_type',
+            'period',
+            'minute',
+            'xnormalize',
+            'ynormalize',
+            'outcome'
+            ])
+        threepoints_failed.data = threepoints_failed.data.filter(pl.col('xnormalize').is_not_null() & pl.col('ynormalize').is_not_null())
+
+        playergameshotsdata_raw = CustomDF('playergameshotsdata3ptmissed_raw',initial_df=threepoints_failed.data)
+        playergameshotsdata_raw.write_table()
+
+    elif table_name == 'gameteamscoresdata_raw':
+
+        gameteamscoresdata_landingzone = CustomDF('gameteamscoresdata_landingzone')
+
+        gameteamscoresdata_landingzone.data = gameteamscoresdata_landingzone.data.explode('score').unnest('score')
+        gameteamscoresdata_landingzone.data = gameteamscoresdata_landingzone.data.with_columns(pl.col('file_name').str.replace(".json","").alias('idMatchIntern'))
+        gameteamscoresdata_landingzone = gameteamscoresdata_landingzone.custom_select([
+            "idMatchIntern",
+            'local',
+            'visit',
+            'minuteQuarter',
+            'minuteAbsolute',
+            'period',
+            ])
+
+        gameteamscoresdata_raw = CustomDF('gameteamscoresdata_raw',initial_df=gameteamscoresdata_landingzone.data)
+        gameteamscoresdata_raw.write_table()
+
+    elif table_name == 'gamedatametadata_raw':
+
+        gamedatametadata_landingzone = CustomDF('gamedatametadata_landingzone')
+
+        gamedatametadata_landingzone.convert_data_types(['year'],pl.Int64)
+
+        gamedatametadata_raw = CustomDF('gamedatametadata_raw',initial_df=gamedatametadata_landingzone.data.unique())
+        gamedatametadata_raw.write_table()
 
     else:
         raise ValueError(

@@ -34,8 +34,8 @@ class DataReader:
         self._history = history
         self._data_path = self._build_data_path()
 
-        if self._schema['partition_column'] and not self._partition_name:
-            raise ValueError('A partitioned dataframe is being read without a specified partition')
+        # if self._schema['partition_column'] and not self._partition_name:
+        #     raise ValueError('A partitioned dataframe is being read without a specified partition')
 
     def _build_data_path(self) -> str:
         """
@@ -75,10 +75,10 @@ class DataReader:
             if self._schema['partition_column']:
                 partition_columns = self._schema['columns']
                 partition_columns[self._schema['partition_column']] = pl.String
-                df = pl.DataFrame([[] for _ in partition_columns],schema=partition_columns)
+                df = pl.DataFrame(schema=partition_columns)
 
             else:
-                df = pl.DataFrame([[] for _ in self._schema['columns']],schema=self._schema['columns'])
+                df = pl.DataFrame(schema=self._schema['columns'])
 
         else:
             if file_format == "csv":
@@ -162,7 +162,7 @@ class DataReader:
         
         try:
             if self._data_path.endswith('.json'):
-                df = pl.read_json(
+                df = pl.read_ndjson(
                     self._data_path,
                     schema=self._schema['columns'],
                 )

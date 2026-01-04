@@ -152,6 +152,8 @@ class CustomDF(DataReader):
 
         # Check if all of the rows are unique in the table
         
+        print(self._df.shape)
+        print(self._df.unique().shape)
         if len(self._df) != len(self._df.unique()):
             # The format of the DataFrame does not match the table definition
             raise ValueError("Not all rows in the table are unqiue")
@@ -253,6 +255,8 @@ class CustomDF(DataReader):
             partition_name=self._name,
             initial_df=monitoring_values_df,
         )
+        # Deduplicate entries before writing
+        complete_monitoring_partition_df.data = complete_monitoring_partition_df.data.unique()
         complete_monitoring_partition_df.write_table()
 
     def write_table(self):
@@ -360,7 +364,7 @@ class CustomDF(DataReader):
             self._df = self._df.with_columns(pl.col(column).cast(data_type))
 
     def custom_join(
-        self, custom_other: "CustomDF", custom_on: str = None, custom_left_on: str = None, custom_right_on: str = None, custom_how: str = None
+        self, custom_other: "CustomDF", custom_on: str = None, custom_left_on: str = None, custom_right_on: str = None, custom_how: str = None, custom_suffix: str = '_right'
     ):
         """
         Joins the current CustomDF instance with another CustomDF instance based on the provided conditions.
@@ -385,9 +389,9 @@ class CustomDF(DataReader):
         copy_self_df = self._df
         copy_other_df = custom_other.data
         if custom_on:
-            copy_df = copy_self_df.join(copy_other_df, on=custom_on, how=custom_how)
+            copy_df = copy_self_df.join(copy_other_df, on=custom_on, how=custom_how, suffix=custom_suffix)
         elif custom_left_on is not None and custom_right_on is not None:
-            copy_df  = copy_self_df.join(copy_other_df, left_on=custom_left_on, right_on=custom_right_on, how=custom_how)
+            copy_df  = copy_self_df.join(copy_other_df, left_on=custom_left_on, right_on=custom_right_on, how=custom_how, suffix=custom_suffix)
         else:
             raise ValueError
 
@@ -524,7 +528,7 @@ class CustomDF(DataReader):
         copy_df = custom_other.data
         copy_df = copy_df.rename(
             {custom_other.map_col: self.map_col})
-        copy_df = pl.concat([self._df, copy_df])
+        copy_df = pl.concat([self._df, copy_df],how='vertical_relaxed')
 
         copy_df = copy_df.unnest(self.map_col)
 

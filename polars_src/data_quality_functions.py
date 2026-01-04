@@ -186,7 +186,7 @@ def record_has_expected_history(dataframe: DataFrame, **kwargs: dict):
 
     record_trace_table = record_trace_table.join(dataframe.select('RecordID'),left_on=['target_RecordID'],right_on=['RecordID'],how='inner')
     record_trace_table = record_trace_table.group_by('target_RecordID','source_table_name').agg(pl.len().alias('amount_records'))
-    print(record_trace_table.glimpse())
+
     expected_df = pl.DataFrame(expected_trace).join(record_trace_table.select('target_RecordID'),how='cross').select(['target_RecordID','source_table_name','amount_records'])
 
     invalid_count = record_trace_table.join(expected_df,on=['target_RecordID','source_table_name','amount_records'],how='anti').select('target_RecordID').unique().height

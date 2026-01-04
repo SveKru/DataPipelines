@@ -1,5 +1,6 @@
 import re
 import polars as pl
+import polars.selectors as cs
 from functools import reduce
 import os
 from datetime import datetime
@@ -18,8 +19,33 @@ def create_sha_values(df: pl.DataFrame, col_list: list) -> pl.DataFrame:
     """
     Creates SHA values for the specified columns in the DataFrame.
     """
+    col_actions = []
+    struct_cols = df.select(cs.struct()).columns
+    list_cols = df.select(cs.list()).columns
+    list_struct_cols = df.select(cs.list(cs.struct())).columns
+    for col in df.columns:
+        if str(col) in list_struct_cols:
+            col_actions.append(
+                pl.col(str(col)).list.eval(
+                    pl.element().struct.json_encode()
+                ).list.join("|").alias(str(col))
+            )
+        elif str(col) in list_cols:
+            col_actions.append(
+                pl.col(str(col)).list.join("|").alias(str(col))
+            )
+        elif str(col) in struct_cols:
+            col_actions.append(
+                pl.col(str(col)).struct.json_encode().alias(str(col))
+            )
+        else:
+            if type(col) == pl.Expr:
+                col_actions.append(col)
+            else:
+                col_actions.append(pl.col(str(col)))
+    
     return df.with_columns(
-        pl.concat_str(col_list, separator="|",ignore_nulls=True).hash().cast(pl.String).alias("shaValue")
+        pl.concat_str(col_actions, separator="|",ignore_nulls=True).hash().cast(pl.String).alias("shaValue")
     )
 
 

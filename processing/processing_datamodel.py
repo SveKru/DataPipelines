@@ -200,6 +200,293 @@ def generate_table_datamodel(table_name:str) -> bool:
         airports_datamodel = CustomDF('airports_datamodel',initial_df=airports_raw.data)
         airports_datamodel.write_table()
 
+    elif table_name == 'gamedata_datamodel':
+
+        gamedata_raw = CustomDF('gamedata_raw')
+        gamedatametadata_raw = CustomDF('gamedatametadata_raw')
+        teamdata_raw = CustomDF('teamdata_raw')
+
+        gamedata = gamedata_raw.custom_select(['time','localId','visitId','idMatchIntern'])
+        gamedata.data = gamedata.data.with_columns(
+            pl.col('time').alias('game_time')
+        )
+        gamedata = gamedata.custom_join(
+            gamedatametadata_raw.custom_select(['uuid', 'competition_code','group','long_name','year']),
+            custom_left_on=[pl.col('idMatchIntern')],
+            custom_right_on=[pl.col('uuid')],
+            custom_how='left'
+        )
+        gamedata.data = gamedata.data.with_columns(
+            pl.col('year').alias('season'),
+            pl.col('long_name').alias('competition_name'),
+            pl.col('idMatchIntern').alias('game_uuid')
+        )
+        gamedata_home = gamedata.custom_join(
+            teamdata_raw.custom_select(['teamIdExtern','teamIdIntern','name']),
+            custom_left_on=[pl.col('localId')],
+            custom_right_on=[pl.col('teamIdIntern')],
+            custom_how='left'
+        )
+        gamedata_home.data = gamedata_home.data.with_columns(
+            pl.lit('home').alias('team_type'),
+            pl.col('teamIdExtern').alias('team_uuid'),
+            )
+        gamedata_home =  gamedata_home.custom_select(
+            [
+                'game_uuid',
+                'game_time',
+                'competition_code',
+                'group',
+                'season',
+                'competition_name',
+                'team_type',
+                'team_uuid'
+            ]
+        )
+
+        
+        gamedata_away = gamedata.custom_join(
+            teamdata_raw.custom_select(['teamIdExtern','teamIdIntern','name']),
+            custom_left_on=[pl.col('visitId')],
+            custom_right_on=[pl.col('teamIdIntern')],
+            custom_how='left'
+        )
+        gamedata_away.data = gamedata_away.data.with_columns(
+            pl.lit('away').alias('team_type'),
+            pl.col('teamIdExtern').alias('team_uuid'),
+            )
+        gamedata_away =  gamedata_away.custom_select(
+            [
+                'game_uuid',
+                'game_time',
+                'competition_code',
+                'group',
+                'season',
+                'competition_name',
+                'team_type',
+                'team_uuid'
+            ]
+        )
+
+        gamedata_total = gamedata_home.custom_union(gamedata_away)
+
+        gamedata_datamodel = CustomDF('gamedata_datamodel',initial_df=gamedata_total.data)
+        gamedata_datamodel.write_table()
+
+    elif table_name == 'gameteamscoresdata_datamodel':
+
+        gameteamscoresdata_raw = CustomDF('gameteamscoresdata_raw')
+        gamedata_raw = CustomDF('gamedata_raw')
+        teamdata_raw = CustomDF('teamdata_raw')
+
+        homeaway_teams = gamedata_raw.custom_select(['idMatchIntern','localId','visitId']).custom_join(
+            teamdata_raw.custom_select(['teamIdExtern','teamIdIntern','name']),
+            custom_left_on=[pl.col('localId')],
+            custom_right_on=[pl.col('teamIdIntern')],
+            custom_how='left'
+        )
+        homeaway_teams.data  = homeaway_teams.data.with_columns(
+            pl.col('teamIdExtern').alias('home_team_uuid'),
+        ).drop('teamIdExtern')
+
+        homeaway_teams = homeaway_teams.custom_join(
+            teamdata_raw.custom_select(['teamIdExtern','teamIdIntern','name']),
+            custom_left_on=[pl.col('visitId')],
+            custom_right_on=[pl.col('teamIdIntern')],
+            custom_how='left'
+        )
+        homeaway_teams.data  = homeaway_teams.data.with_columns(
+            pl.col('teamIdExtern').alias('away_team_uuid'),
+        ).drop('teamIdExtern')
+
+        gamescores = gameteamscoresdata_raw.custom_join(
+            homeaway_teams.custom_select(['idMatchIntern','home_team_uuid','away_team_uuid']),
+            custom_left_on=[pl.col('idMatchIntern')],
+            custom_right_on=[pl.col('idMatchIntern')],
+            custom_how='left'
+        )
+
+        gamescores.data = gamescores.data.with_columns(
+            pl.col('idMatchIntern').alias('game_uuid'),
+            pl.col('local').alias('home_score'),
+            pl.col('visit').alias('away_score'),
+            pl.col('period').alias('quarter'),
+        )
+
+        gamescores = gamescores.custom_select(
+            [
+                'game_uuid',
+                'home_team_uuid',
+                'away_team_uuid',
+                'home_score',
+                'away_score',
+                'minuteQuarter',
+                'minuteAbsolute',
+                'quarter' 
+            ]
+        )
+
+        gamescores.convert_data_types(['home_score','away_score','minuteQuarter','minuteAbsolute','quarter'],pl.Int64)
+
+        gameteamscoresdata_datamodel = CustomDF('gameteamscoresdata_datamodel',initial_df=gamescores.data)
+        gameteamscoresdata_datamodel.write_table()
+
+    elif table_name == 'playerdata_datamodel':
+
+        playerdata_raw = CustomDF('playergamedata_raw')
+
+        playerdata_raw.data = playerdata_raw.data.with_columns(
+            pl.col('playerUuid').alias('player_uuid'),
+            pl.col('teamId').alias('team_uuid'),
+            pl.col('name').alias('player_name'),
+            pl.col('dorsal').alias('player_number')
+        )
+        playerdata_raw = playerdata_raw.custom_select(
+            [
+                'player_uuid',
+                'team_uuid',
+                'player_name',
+                'player_number'
+            ]
+        )
+        playerdata_raw.data = playerdata_raw.data.filter(pl.col('player_uuid').is_not_null())
+        playerdata_raw = playerdata_raw.custom_distinct()
+
+        playerdata_datamodel = CustomDF('playerdata_datamodel',initial_df=playerdata_raw.data)
+        playerdata_datamodel.write_table()
+
+    elif table_name == 'playergamestatsdata_datamodel':
+        playergamestatsdata_raw = CustomDF('playergamestatsdata_raw')
+
+        playergamestatsdata_raw.data = playergamestatsdata_raw.data.with_columns(
+            pl.col('idMatchIntern').alias('game_uuid'),
+            pl.col('score').alias('points'),
+            pl.col('shotsOfOneAttempted').alias('ft_attempted'),
+            pl.col('shotsOfOneSuccessful').alias('ft_made'),
+            pl.col('shotsOfTwoAttempted').alias('two_attempted'),
+            pl.col('shotsOfTwoSuccessful').alias('two_made'),
+            pl.col('shotsOfThreeAttempted').alias('three_attempted'),
+            pl.col('shotsOfThreeSuccessful').alias('three_made'),
+            pl.col('personal').alias('fouls'),
+            pl.col('timePlayed').alias('minutes_played'),
+            pl.col('gamePlayed').alias('did_play'),
+            pl.col('playerUuid').alias('player_uuid'),
+        )
+
+        playergamestatsdata_raw = playergamestatsdata_raw.custom_select(
+            [
+            'game_uuid',
+            'player_uuid',
+            'did_play',
+            'minutes_played',
+            'points',
+            'ft_attempted',
+            'ft_made',
+            'two_attempted',
+            'two_made',
+            'three_attempted',
+            'three_made',
+            'rebounds',
+            'assists',
+            'steals',
+            'fouls',
+            ])
+
+        playergamestatsdata_datamodel = CustomDF('playergamestatsdata_datamodel',initial_df=playergamestatsdata_raw.data)
+        playergamestatsdata_datamodel.write_table()
+
+    elif table_name == 'playergameshotsdata_datamodel':
+
+        twoptmade_raw = CustomDF('playergameshotsdata2ptmade_raw')
+        twoptmissed_raw = CustomDF('playergameshotsdata2ptmissed_raw')
+        threeptmade_raw = CustomDF('playergameshotsdata3ptmade_raw')
+        threeptmissed_raw = CustomDF('playergameshotsdata3ptmissed_raw')
+
+        shots_data = twoptmade_raw.custom_union(twoptmissed_raw).custom_union(threeptmade_raw).custom_union(threeptmissed_raw)
+
+        playergameshotsdata_datamodel = CustomDF('playergameshotsdata_datamodel',initial_df=shots_data.data)
+        playergameshotsdata_datamodel.write_table()
+
+    elif table_name == 'teamgamestatsdata_datamodel':
+        teamgamestatsdata_raw = CustomDF('teamgamestatsdata_raw')
+
+        teamgamestatsdata_raw.data = teamgamestatsdata_raw.data.with_columns(
+            pl.col('idMatchIntern').alias('game_uuid'),
+            pl.col('score').alias('points'),
+            pl.col('shotsOfOneAttempted').alias('ft_attempted'),
+            pl.col('shotsOfOneSuccessful').alias('ft_made'),
+            pl.col('shotsOfTwoAttempted').alias('two_attempted'),
+            pl.col('shotsOfTwoSuccessful').alias('two_made'),
+            pl.col('shotsOfThreeAttempted').alias('three_attempted'),
+            pl.col('shotsOfThreeSuccessful').alias('three_made'),
+            pl.col('personal').alias('fouls'),
+        )
+
+        teamgamestatsdata_raw = teamgamestatsdata_raw.custom_select(
+            [
+            'game_uuid',
+            'team_uuid',
+            'points',
+            'ft_attempted',
+            'ft_made',
+            'two_attempted',
+            'two_made',
+            'three_attempted',
+            'three_made',
+            'rebounds',
+            'assists',
+            'steals',
+            'fouls',
+            ])
+        
+        teamgamestatsdata_datamodel = CustomDF('teamgamestatsdata_datamodel',initial_df=teamgamestatsdata_raw.data)
+        teamgamestatsdata_datamodel.write_table()
+
+    elif table_name == 'playergamesubstitionsgamedata_datamodel':
+        playersubstitionsgamedata_raw = CustomDF('playersubstitionsgamedata_raw')
+
+        playersubstitionsgamedata_raw.data = playersubstitionsgamedata_raw.data.with_columns(
+            pl.col('idMatchIntern').alias('game_uuid'),
+            pl.col('playerUuid').alias('player_uuid'),
+            pl.col('minuteAbsolut').alias('minute_absolute'),
+            pl.col('pointDiff').alias('point_diff'),
+        )
+
+        playersubstitionsgamedata_raw = playersubstitionsgamedata_raw.custom_select(
+            [
+            'game_uuid',
+            'player_uuid',
+            'type',
+            'minute_absolute',
+            'point_diff',
+            ])
+        
+        playersubstitionsgamedata_raw.convert_data_types(['minute_absolute','point_diff'],pl.Int64)
+
+        playersubstitionsgamedata_datamodel = CustomDF('playergamesubstitionsgamedata_datamodel',initial_df=playersubstitionsgamedata_raw.data)
+        playersubstitionsgamedata_datamodel.write_table()
+
+    elif table_name == 'teamdata_datamodel':
+        teamdata_raw = CustomDF('teamdata_raw')
+
+        teamdata_raw.data = teamdata_raw.data.with_columns(
+            pl.col('teamIdExtern').alias('team_uuid'),
+            pl.col('name').alias('team_name'),
+            pl.col('shortName').alias('team_short_name'),
+        )
+
+        teamdata_raw = teamdata_raw.custom_select(
+            [
+            'team_uuid',
+            'team_name',
+            'team_short_name',
+            ])
+        
+        teamdata_raw = teamdata_raw.custom_distinct()
+
+        teamdata_datamodel = CustomDF('teamdata_datamodel',initial_df=teamdata_raw.data)
+        teamdata_datamodel.write_table()
+
     else:
         raise ValueError(
             f'The table: {table_name} is not specified in the processing functions')
