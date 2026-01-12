@@ -22,7 +22,7 @@ def save_json_to_file(json_data, file_path):
         json.dump(json_data, file, indent=4)
 
 
-def json_file_exists(uuid,writing_path):
+def json_file_exists(uuid, writing_path):
     """Check if the JSON file for the given UUID already exists."""
     data_dir = os.path.join(writing_path, "data")
     file_path = os.path.join(data_dir, f"{uuid}.json")
@@ -44,11 +44,14 @@ def scrape_webpage(url):
         uuids = []
         print(links)
         for link in links:
-            if link["href"].startswith(
-                # This is the URL pattern for the links containing UUIDs from the past seasons
-                # r"/competicions-anteriors/resultat/estadistiques"
-                'https://www.basquetcatala.cat/estadistiques'
-            ) and 'video' not in link['href']:
+            if (
+                link["href"].startswith(
+                    # This is the URL pattern for the links containing UUIDs from the past seasons
+                    # r"/competicions-anteriors/resultat/estadistiques"
+                    "https://www.basquetcatala.cat/estadistiques"
+                )
+                and "video" not in link["href"]
+            ):
                 href = link["href"]
                 print(f"Found link: {href}")
 
@@ -89,11 +92,9 @@ def fetch_game_data(api_url, uuid, writing_path):
         print(f"An error occurred while fetching game data: {e}")
         return None
 
+
 def data_scraper(
-        writing_path: str,
-        query_args_list: list[dict],
-        base_url: str,
-        api_url: str
+    writing_path: str, query_args_list: list[dict], base_url: str, api_url: str
 ):
     for arg in query_args_list:
         #  This is the URL for all of the past competitions, which are archived
@@ -115,16 +116,18 @@ def data_scraper(
 
                 # save the initial arguments to a json dict
                 initial_args = {
-                    "year": arg['year'],
-                    "competition_code": arg['competition_code'],
-                    "phase": arg['phase'],
-                    "group": arg['group'],
-                    "long_name": arg['long_name'],
+                    "year": arg["year"],
+                    "competition_code": arg["competition_code"],
+                    "phase": arg["phase"],
+                    "group": arg["group"],
+                    "long_name": arg["long_name"],
                     "uuid": uuid,
                 }
                 # write the arg to file in append mode
                 os.makedirs(f"{writing_path}/mapping", exist_ok=True)
-                with open(f"{writing_path}/mapping/query_args.json", "a", encoding="utf-8") as file:
+                with open(
+                    f"{writing_path}/mapping/query_args.json", "a", encoding="utf-8"
+                ) as file:
                     json.dump(initial_args, file)
                     file.write("\n")
 
