@@ -496,6 +496,30 @@ def generate_table_enriched(table_name:str) -> bool:
         opponentsstatsummary = CustomDF('opponentsstatssummary_enriched')
         opponentstrendsummary = CustomDF('opponentstrendssummary_enriched')
         teamdata = CustomDF('teamdata_datamodel')
+        player_analytics = CustomDF('playeranalytics_enriched')
+
+        teamshotsummary = player_analytics.custom_groupby(
+            [
+                "season",
+                "team_uuid"
+            ],
+            pl.col("twopoint_locations").explode().alias("twopoint_locations"),
+            pl.col("threepoint_locations").explode().alias("threepoint_locations")
+        )
+        teamshotsummary.data = teamshotsummary.data.with_columns(
+            pl.col("twopoint_locations").list.eval(
+            pl.element().filter(
+                (pl.element().struct.field("xnormalize").is_not_null()) & 
+                (pl.element().struct.field("ynormalize").is_not_null())
+            )
+            ),
+            pl.col("threepoint_locations").list.eval(
+            pl.element().filter(
+                (pl.element().struct.field("xnormalize").is_not_null()) & 
+                (pl.element().struct.field("ynormalize").is_not_null())
+            )
+            )
+        )
 
         teamdata = teamdata.custom_select([
             "team_uuid",
@@ -518,11 +542,104 @@ def generate_table_enriched(table_name:str) -> bool:
             custom_on=['team_uuid','season'],
             custom_how='left',
             custom_suffix='_opponent'
+        ).custom_join(
+            teamshotsummary,
+            custom_on=['team_uuid','season'],
+            custom_how='left',
         )
 
         teamanalytics_enriched = CustomDF('teamanalytics_enriched',initial_df=team_analytics.data)
         teamanalytics_enriched.write_table()
 
+    elif table_name == 'teamgameanalytics_enriched':
+
+        teamgamestats = CustomDF('teamgamestatsdata_datamodel')
+        gamedata = CustomDF('gamedata_datamodel')
+        teamdata = CustomDF('teamdata_datamodel')
+
+
+        gamedata = gamedata.custom_join(
+            gamedata.custom_select(['game_uuid','team_uuid']),
+            custom_on=['game_uuid'],
+            custom_how='inner',
+            custom_suffix='_opponent'
+        )
+
+        gamedata.data=gamedata.data.filter(pl.col('team_uuid') != pl.col('team_uuid_opponent'))
+
+        teamgamestats = teamgamestats.custom_join(
+            gamedata.custom_select(['game_uuid','team_uuid','team_uuid_opponent','game_time','season','team_type']),
+            custom_on=['game_uuid','team_uuid'],
+            custom_how='left'
+        )
+
+        teamdata = teamdata.custom_select([
+            "team_uuid",
+            "team_name",
+            "team_short_name"
+        ])
+        teamdata.data = teamdata.data.unique(subset=['team_uuid'],keep='first')
+
+        team_game_analytics = teamgamestats.custom_join(
+            teamdata,
+            custom_on=['team_uuid'],
+            custom_how='left'
+        )
+        team_game_analytics = team_game_analytics.custom_join(
+            teamdata,
+            custom_left_on=['team_uuid_opponent'],
+            custom_right_on=['team_uuid'],
+            custom_how='left',
+            custom_suffix='_opponent'
+        )
+
+        team_game_analytics = team_game_analytics.custom_join(
+            teamgamestats.custom_drop(['from_date','to_date','RecordID']),
+            custom_left_on=['game_uuid','team_uuid_opponent'],
+            custom_right_on=['game_uuid','team_uuid'],
+            custom_how='left',
+            custom_suffix='_opponent'
+        )
+
+        team_game_analytics.data = team_game_analytics.data.with_columns(
+            pl.col("game_time").cast(pl.Date())
+        )
+
+        team_game_analytics = team_game_analytics.custom_select(
+            [
+                "game_uuid",
+                "team_uuid",
+                "team_name",
+                "team_short_name",
+                "team_uuid_opponent",
+                "team_name_opponent",
+                "team_short_name_opponent",
+                "season",
+                "team_type",
+                "game_time",
+                "points",
+                "ft_attempted",
+                "ft_made",
+                "two_made",
+                "three_made",
+                "assists",
+                "rebounds",
+                "steals",
+                "fouls",
+                "points_opponent",
+                "ft_attempted_opponent",
+                "ft_made_opponent",
+                "two_made_opponent",
+                "three_made_opponent",
+                "assists_opponent",
+                "rebounds_opponent",
+                "steals_opponent",
+                "fouls_opponent",
+            ]
+        )
+
+        teamgameanalytics_enriched = CustomDF('teamgameanalytics_enriched',initial_df=team_game_analytics.data)
+        teamgameanalytics_enriched.write_table()
 
     else:
         raise ValueError(
