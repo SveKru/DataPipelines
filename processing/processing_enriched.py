@@ -71,7 +71,7 @@ def generate_table_enriched(table_name: str) -> bool:
         )
         flight_airport_departures.write_table()
 
-    elif table_name == "playerplusminus_enriched":
+    elif table_name == "playergameplusminus_enriched":
         substitions = CustomDF("playergamesubstitionsgamedata_datamodel")
 
         substitions.data = substitions.data.with_columns(
@@ -104,15 +104,31 @@ def generate_table_enriched(table_name: str) -> bool:
         )
 
         substitions = substitions.custom_groupby(
-            ["game_uuid", "player_uuid"], pl.sum("plus_minus").alias("total_plus_minus")
-        ).custom_groupby(
+            ["game_uuid", "player_uuid"], 
+            pl.sum("plus_minus").alias("total_plus_minus"),
+            pl.mean("plus_minus").alias("avg_plus_minus"),
+        )
+
+        substitions = substitions.custom_select(
+            ["player_uuid", "game_uuid", "total_plus_minus", "avg_plus_minus"]
+        )
+
+        playergameplusminus_enriched = CustomDF(
+            "playergameplusminus_enriched", initial_df=substitions.data
+        )
+        playergameplusminus_enriched.write_table()
+
+    elif table_name == "playerplusminus_enriched":
+        player_game_plusminus = CustomDF("playergameplusminus_enriched")
+
+        player_plusminus = player_game_plusminus.custom_groupby(
             ["player_uuid"],
             pl.sum("total_plus_minus").alias("total_plus_minus"),
             pl.mean("total_plus_minus").alias("avg_plus_minus"),
         )
 
         playerplusminus_enriched = CustomDF(
-            "playerplusminus_enriched", initial_df=substitions.data
+            "playerplusminus_enriched", initial_df=player_plusminus.data
         )
         playerplusminus_enriched.write_table()
 
@@ -651,6 +667,74 @@ def generate_table_enriched(table_name: str) -> bool:
             "teamgameanalytics_enriched", initial_df=team_game_analytics.data
         )
         teamgameanalytics_enriched.write_table()
+
+    elif table_name == "playergameanalytics_enriched":
+        player_stats = CustomDF("playergamestatsdata_datamodel")
+        game_data = CustomDF("gamedata_datamodel")
+        player_data = CustomDF("playerdata_datamodel")
+        team_data = CustomDF("teamdata_datamodel")
+        playergameplusminus_enriched = CustomDF("playergameplusminus_enriched")
+        
+        player_data = player_data.custom_select(
+            ["player_uuid", "team_uuid", "player_name", "player_number"]
+        )
+
+        team_data = team_data.custom_select(
+            ["team_uuid", "team_name"]
+        ).custom_distinct()
+
+        player_data.data = player_data.data.unique(subset=["player_uuid"], keep="first")
+        team_data.data = team_data.data.unique(subset=["team_uuid"], keep="first")
+
+
+        player_stats = player_stats.custom_join(
+            game_data.custom_select(["game_uuid", "season"]).custom_distinct(),
+            custom_on=["game_uuid"],
+            custom_how="left",
+        )
+        player_stats = player_stats.custom_join(
+            player_data,
+            custom_on=["player_uuid"],
+            custom_how="left",
+        ).custom_join(
+            team_data.custom_select(["team_uuid", "team_name"]).custom_distinct(),
+            custom_on=["team_uuid"],
+            custom_how="left",
+        )
+        player_stats.data = player_stats.data.filter(pl.col("did_play") == 1)
+
+        player_stats = player_stats.custom_join(
+            playergameplusminus_enriched.custom_drop(["from_date", "to_date", "RecordID"]),
+            custom_on=["player_uuid", "game_uuid"],
+            custom_how="left",
+        )
+
+        player_stats = player_stats.custom_select(
+            [
+                "player_uuid",
+                "player_name",
+                "player_number",
+                "team_uuid",
+                "team_name",
+                "season",
+                "game_uuid",
+                "points",
+                "ft_attempted",
+                "ft_made",
+                "two_made",
+                "three_made",
+                "minutes_played",
+                "total_plus_minus",
+                "avg_plus_minus",
+            ]
+        ).custom_distinct()
+
+        print(player_stats.data.glimpse())
+
+        playergameanalytics_enriched = CustomDF(
+            "playergameanalytics_enriched", initial_df=player_stats.data
+        )
+        playergameanalytics_enriched.write_table()
 
     else:
         raise ValueError(
