@@ -519,6 +519,123 @@ class CustomDF(DataReader):
             self._history,
         )
 
+    def custom_join_asof(
+        self,
+        custom_other: "CustomDF",
+        custom_on: str = None,
+        custom_left_on_asof: str = None,
+        custom_right_on_asof: str = None,
+        custom_by: list = None,
+        custom_by_left: list = None,
+        custom_by_right: list = None,
+        custom_strategy: str = "backward",
+        custom_suffix: str = "_right",
+    ):
+        """
+        Performs an as-of join between the current CustomDF and another CustomDF, merging
+        lineage map columns in the same way as custom_join.
+
+        Both DataFrames must be sorted by the asof key column before calling this method.
+
+        Args:
+            custom_other (CustomDF): The right-hand CustomDF to join with.
+            custom_on (str, optional): Shared asof column name when it is the same in both
+                DataFrames. Mutually exclusive with custom_left_on_asof / custom_right_on_asof.
+            custom_left_on_asof (str, optional): Left-side asof column name when the column
+                has a different name on each side. Must be paired with custom_right_on_asof.
+            custom_right_on_asof (str, optional): Right-side asof column name. Must be paired
+                with custom_left_on_asof.
+            custom_by (list, optional): Column(s) used as an equi-join partitioning key on both
+                sides. Mutually exclusive with custom_by_left / custom_by_right.
+            custom_by_left (list, optional): Left-side equi-join partition columns.
+            custom_by_right (list, optional): Right-side equi-join partition columns.
+            custom_strategy (str): Match strategy: "backward" (default), "forward", or "nearest".
+            custom_suffix (str): Suffix for duplicate right-side column names. Defaults to "_right".
+
+        Returns:
+            CustomDF: A new CustomDF instance containing the joined data with merged lineage.
+        """
+        copy_self_df = self._df
+        copy_other_df = custom_other.data
+
+        # Resolve the asof key parameters
+        asof_kwargs = {}
+        if custom_on is not None:
+            asof_kwargs["on"] = custom_on
+        elif custom_left_on_asof is not None and custom_right_on_asof is not None:
+            asof_kwargs["left_on"] = custom_left_on_asof
+            asof_kwargs["right_on"] = custom_right_on_asof
+        else:
+            raise ValueError(
+                "Provide either custom_on or both custom_left_on_asof and custom_right_on_asof."
+            )
+
+        # Resolve the equality partition key parameters
+        if custom_by is not None:
+            asof_kwargs["by"] = custom_by
+        elif custom_by_left is not None and custom_by_right is not None:
+            asof_kwargs["by_left"] = custom_by_left
+            asof_kwargs["by_right"] = custom_by_right
+
+        copy_df = copy_self_df.join_asof(
+            copy_other_df,
+            **asof_kwargs,
+            strategy=custom_strategy,
+            suffix=custom_suffix,
+        )
+
+        # Merge lineage map columns — identical logic to custom_join
+        self_df_struct_field = [
+            key
+            for key in copy_self_df.select(pl.col(self.map_col))
+            .schema[self.map_col]
+            .to_schema()
+        ]
+        other_df_struct_field = [
+            key
+            for key in copy_other_df.select(pl.col(custom_other.map_col))
+            .schema[custom_other.map_col]
+            .to_schema()
+        ]
+
+        total_struct_fields = list(set(self_df_struct_field + other_df_struct_field))
+
+        for field in total_struct_fields:
+            if field in self_df_struct_field and field not in other_df_struct_field:
+                copy_df = copy_df.with_columns(
+                    pl.col(self.map_col)
+                    .struct.with_fields(pl.field(field).list.unique())
+                    .alias(self.map_col)
+                )
+            elif field not in self_df_struct_field and field in other_df_struct_field:
+                copy_df = copy_df.with_columns(
+                    pl.col(self.map_col)
+                    .struct.with_fields(
+                        pl.col(custom_other.map_col).struct.field(field).list.unique()
+                    )
+                    .alias(self.map_col)
+                )
+            else:
+                copy_df = copy_df.with_columns(
+                    pl.col(self.map_col)
+                    .struct.with_fields(
+                        pl.concat_list(
+                            pl.field(field),
+                            pl.col(custom_other.map_col).struct.field(field),
+                        ).list.unique()
+                    )
+                    .alias(self.map_col)
+                )
+
+        copy_df = copy_df.drop(pl.col(custom_other.map_col))
+
+        return CustomDF(
+            self._name,
+            copy_df,
+            self._partition_name,
+            self._history,
+        )
+
     def custom_select(self, columns: list):
         """
         Selects the specified columns from the DataFrame. If the DataFrame is not coming from the landing zone, the existence of the map column is assumed.

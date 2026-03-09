@@ -343,6 +343,131 @@ def generate_table_enriched(table_name: str) -> bool:
         )
         player_analytics_enriched.write_table()
 
+    elif table_name == "playergameimpact_enriched":
+        substitutions = CustomDF("playergamesubstitionsgamedata_datamodel")
+        gameteamscoresdata = CustomDF("gameteamscoresdata_datamodel")
+        player_data = CustomDF("playerdata_datamodel")
+
+        # Rank IN/OUT events within each player-game-type group to pair them
+        substitutions.data = substitutions.data.with_columns(
+            pl.col("minute_absolute")
+            .rank("dense")
+            .over(["game_uuid", "player_uuid", "type"])
+            .alias("rank")
+        )
+
+        # Split into IN and OUT events as CustomDF instances to preserve lineage
+        stints_in = substitutions.custom_select(
+            ["game_uuid", "player_uuid", "rank", "type", "minute_absolute"]
+        )
+        stints_in.data = (
+            stints_in.data.filter(pl.col("type") == "IN_TYPE")
+            .rename({"minute_absolute": "minute_in"})
+            .drop("type")
+        )
+
+        stints_out = substitutions.custom_select(
+            ["game_uuid", "player_uuid", "rank", "type", "minute_absolute"]
+        )
+        stints_out.data = (
+            stints_out.data.filter(pl.col("type") == "OUT_TYPE")
+            .rename({"minute_absolute": "minute_out"})
+            .drop("type")
+        )
+
+        # Pair IN/OUT events, drop unmatched, then resolve each player's team
+        stints = stints_in.custom_join(
+            stints_out,
+            custom_on=["game_uuid", "player_uuid", "rank"],
+            custom_how="left",
+        )
+        stints.data = stints.data.filter(pl.col("minute_out").is_not_null())
+
+        player_teams = player_data.custom_select(["player_uuid", "team_uuid"])
+        player_teams.data = player_teams.data.unique(subset=["player_uuid"], keep="first")
+        stints = stints.custom_join(
+            player_teams,
+            custom_on=["player_uuid"],
+            custom_how="left",
+        )
+
+        # Prepare cumulative score snapshots sorted by game and minute
+        scores = gameteamscoresdata.custom_select(
+            ["game_uuid", "minuteAbsolute", "home_score", "away_score",
+             "home_team_uuid", "away_team_uuid"]
+        )
+        scores.data = scores.data.sort(["game_uuid", "minuteAbsolute"])
+
+        # Snapshot cumulative score at sub-in time via backward asof join
+        stints.data = stints.data.sort(["game_uuid", "minute_in"])
+        stints = stints.custom_join_asof(
+            scores,
+            custom_left_on_asof="minute_in",
+            custom_right_on_asof="minuteAbsolute",
+            custom_by=["game_uuid"],
+            custom_strategy="backward",
+        )
+        stints.data = stints.data.rename({
+            "home_score": "home_score_at_in",
+            "away_score": "away_score_at_in",
+        })
+
+        # Snapshot cumulative score at sub-out time via backward asof join
+        stints.data = stints.data.sort(["game_uuid", "minute_out"])
+        stints = stints.custom_join_asof(
+            scores.custom_select(["game_uuid", "minuteAbsolute", "home_score", "away_score"]),
+            custom_left_on_asof="minute_out",
+            custom_right_on_asof="minuteAbsolute",
+            custom_by=["game_uuid"],
+            custom_strategy="backward",
+        )
+        stints.data = stints.data.rename({
+            "home_score": "home_score_at_out",
+            "away_score": "away_score_at_out",
+        })
+
+        # Points scored while the player was on court = score delta over the stint window
+        stints.data = stints.data.with_columns(
+            pl.when(pl.col("team_uuid") == pl.col("home_team_uuid"))
+            .then(pl.col("home_score_at_out") - pl.col("home_score_at_in"))
+            .otherwise(pl.col("away_score_at_out") - pl.col("away_score_at_in"))
+            .cast(pl.Int64)
+            .alias("offensive_points_on_court"),
+            pl.when(pl.col("team_uuid") == pl.col("home_team_uuid"))
+            .then(pl.col("away_score_at_out") - pl.col("away_score_at_in"))
+            .otherwise(pl.col("home_score_at_out") - pl.col("home_score_at_in"))
+            .cast(pl.Int64)
+            .alias("defensive_points_on_court"),
+            (pl.col("minute_out") - pl.col("minute_in")).alias("minutes_on_court"),
+        )
+
+        # Aggregate per (game_uuid, player_uuid) and compute net impact and per-minute rates
+        stints = stints.custom_select(
+            ["game_uuid", "player_uuid", "offensive_points_on_court",
+             "defensive_points_on_court", "minutes_on_court"]
+        ).custom_groupby(
+            ["game_uuid", "player_uuid"],
+            pl.sum("offensive_points_on_court").alias("offensive_points_on_court"),
+            pl.sum("defensive_points_on_court").alias("defensive_points_on_court"),
+            pl.sum("minutes_on_court").alias("total_minutes_on_court"),
+        )
+
+        stints.data = stints.data.with_columns(
+            (pl.col("offensive_points_on_court") / pl.col("total_minutes_on_court"))
+            .alias("offensive_points_per_minute"),
+            (pl.col("defensive_points_on_court") / pl.col("total_minutes_on_court"))
+            .alias("defensive_points_per_minute"),
+        )
+
+        CustomDF(
+            "playergameimpact_enriched",
+            initial_df=stints.custom_select(
+                ["player_uuid", "game_uuid", "offensive_points_on_court",
+                 "defensive_points_on_court",
+                 "offensive_points_per_minute", "defensive_points_per_minute"]
+            ).data,
+        ).write_table()
+
     elif table_name == "teamstatssummary_enriched":
         team_stats = CustomDF("teamgamestatsdata_datamodel")
         game_data = CustomDF("gamedata_datamodel")
@@ -674,6 +799,7 @@ def generate_table_enriched(table_name: str) -> bool:
         player_data = CustomDF("playerdata_datamodel")
         team_data = CustomDF("teamdata_datamodel")
         playergameplusminus_enriched = CustomDF("playergameplusminus_enriched")
+        playergameimpact_enriched = CustomDF("playergameimpact_enriched")
 
         
         game_data = game_data.custom_join(
@@ -713,6 +839,12 @@ def generate_table_enriched(table_name: str) -> bool:
 
         player_stats = player_stats.custom_join(
             playergameplusminus_enriched.custom_drop(["from_date", "to_date", "RecordID"]),
+            custom_on=["player_uuid", "game_uuid"],
+            custom_how="left",
+        )
+
+        player_stats = player_stats.custom_join(
+            playergameimpact_enriched.custom_drop(["from_date", "to_date", "RecordID"]),
             custom_on=["player_uuid", "game_uuid"],
             custom_how="left",
         )
@@ -769,6 +901,10 @@ def generate_table_enriched(table_name: str) -> bool:
                 "minutes_played",
                 "total_plus_minus",
                 "avg_plus_minus",
+                "offensive_points_on_court",
+                "defensive_points_on_court",
+                "offensive_points_per_minute",
+                "defensive_points_per_minute",
             ]
         ).custom_distinct()
 
