@@ -84,6 +84,19 @@ def check_values_in_range(dataframe: DataFrame, **kwargs: dict) -> int:
     return valid_count
 
 
+def get_violations_in_range(dataframe: DataFrame, **kwargs: dict) -> DataFrame:
+    """
+    Return rows violating the 'values in range' check.
+    """
+    column_name = kwargs.get("columns")
+    range_start = kwargs.get("range_start")
+    range_end = kwargs.get("range_end")
+
+    return dataframe.filter(
+        ~pl.col(column_name[0]).is_between(range_start, range_end)
+    ).sort(by=column_name[0])
+
+
 def check_values_unique(dataframe: DataFrame, **kwargs: dict) -> int:
     """
     Check the uniqueness of values in specified columns of a DataFrame.
@@ -91,6 +104,21 @@ def check_values_unique(dataframe: DataFrame, **kwargs: dict) -> int:
     column_name = kwargs.get("columns")
     valid_count = dataframe.select(column_name).unique().height
     return valid_count
+
+
+def get_violations_unique(dataframe: DataFrame, **kwargs: dict) -> DataFrame:
+    """
+    Return rows violating the 'values are unique' check (all rows that share a duplicate key).
+    """
+    column_name = kwargs.get("columns")
+    duplicate_keys = (
+        dataframe.select(column_name)
+        .group_by(column_name)
+        .agg(pl.len().alias("_count"))
+        .filter(pl.col("_count") > 1)
+        .drop("_count")
+    )
+    return dataframe.join(duplicate_keys, on=column_name, how="inner").sort(by=column_name)
 
 
 def check_values_format(dataframe: DataFrame, **kwargs: dict) -> int:
@@ -104,6 +132,18 @@ def check_values_format(dataframe: DataFrame, **kwargs: dict) -> int:
         pl.col(column_name[0]).str.contains(row_format)
     ).height
     return valid_count
+
+
+def get_violations_format(dataframe: DataFrame, **kwargs: dict) -> DataFrame:
+    """
+    Return rows violating the 'values have format' check.
+    """
+    column_name = kwargs.get("columns")
+    row_format = kwargs.get("format")
+
+    return dataframe.filter(
+        ~pl.col(column_name[0]).str.contains(row_format)
+    ).sort(by=column_name[0])
 
 
 def check_values_consistent(
@@ -227,6 +267,7 @@ def calculate_blocking_issues(
 ) -> None:
     """
     Calculate blocking issues and raise ValueError if any are found.
+    Prints the first violating rows before raising.
     """
     current_df = dataframe.filter(pl.col("to_date") == pl.date(2099, 12, 31))
     total_records = current_df.height
@@ -237,12 +278,25 @@ def calculate_blocking_issues(
             "values are unique": check_values_unique,
             "values have format": check_values_format,
         }
+        violation_dict = {
+            "values in range": get_violations_in_range,
+            "values are unique": get_violations_unique,
+            "values have format": get_violations_format,
+        }
 
         check_func = processing_dict[blocking_check["check"]]
         range_test_int = check_func(current_df, **blocking_check)
         blocking_count = total_records - range_test_int
 
         if blocking_count != 0:
+            violation_func = violation_dict[blocking_check["check"]]
+            violation_rows = violation_func(current_df, **blocking_check)
+            print(
+                f"\nBlocking issue '{blocking_check['check']}' "
+                f"on columns {blocking_check['columns']} — "
+                f"{blocking_count} violating row(s). First rows:"
+            )
+            print(violation_rows.head(10))
             raise ValueError(
                 f"Blocking issue violation detected: {blocking_check['check']}"
             )
