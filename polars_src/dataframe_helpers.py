@@ -25,23 +25,24 @@ def create_sha_values(df: pl.DataFrame, col_list: list) -> pl.DataFrame:
     struct_cols = df.select(cs.struct()).columns
     list_cols = df.select(cs.list()).columns
     list_struct_cols = df.select(cs.list(cs.struct())).columns
-    for col in df.columns:
-        if str(col) in list_struct_cols:
+    for col in col_list:
+        col_name = col.meta.output_name() if isinstance(col, pl.Expr) else str(col)
+        if col_name in list_struct_cols:
             col_actions.append(
-                pl.col(str(col))
+                pl.col(col_name)
                 .list.eval(pl.element().struct.json_encode())
                 .list.join("|")
-                .alias(str(col))
+                .alias(col_name)
             )
-        elif str(col) in list_cols:
-            col_actions.append(pl.col(str(col)).list.join("|").alias(str(col)))
-        elif str(col) in struct_cols:
-            col_actions.append(pl.col(str(col)).struct.json_encode().alias(str(col)))
+        elif col_name in list_cols:
+            col_actions.append(pl.col(col_name).list.join("|").alias(col_name))
+        elif col_name in struct_cols:
+            col_actions.append(pl.col(col_name).struct.json_encode().alias(col_name))
         else:
-            if type(col) == pl.Expr:
+            if isinstance(col, pl.Expr):
                 col_actions.append(col)
             else:
-                col_actions.append(pl.col(str(col)))
+                col_actions.append(pl.col(col_name))
 
     return df.with_columns(
         pl.concat_str(col_actions, separator="|", ignore_nulls=True)
