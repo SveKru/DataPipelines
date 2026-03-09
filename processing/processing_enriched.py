@@ -674,13 +674,25 @@ def generate_table_enriched(table_name: str) -> bool:
         player_data = CustomDF("playerdata_datamodel")
         team_data = CustomDF("teamdata_datamodel")
         playergameplusminus_enriched = CustomDF("playergameplusminus_enriched")
+
+        
+        game_data = game_data.custom_join(
+            game_data.custom_select(["game_uuid", "team_uuid"]),
+            custom_on=["game_uuid"],
+            custom_how="inner",
+            custom_suffix="_opponent",
+        )
+
+        game_data.data = game_data.data.filter(
+            pl.col("team_uuid") != pl.col("team_uuid_opponent")
+        )
         
         player_data = player_data.custom_select(
             ["player_uuid", "team_uuid", "player_name", "player_number"]
         )
 
         team_data = team_data.custom_select(
-            ["team_uuid", "team_name"]
+            ["team_uuid", "team_name","team_short_name"]
         ).custom_distinct()
 
         player_data.data = player_data.data.unique(subset=["player_uuid"], keep="first")
@@ -688,17 +700,13 @@ def generate_table_enriched(table_name: str) -> bool:
 
 
         player_stats = player_stats.custom_join(
-            game_data.custom_select(["game_uuid", "season"]).custom_distinct(),
+            game_data.custom_select(["game_uuid", "season","game_time"]).custom_distinct(),
             custom_on=["game_uuid"],
             custom_how="left",
         )
         player_stats = player_stats.custom_join(
             player_data,
             custom_on=["player_uuid"],
-            custom_how="left",
-        ).custom_join(
-            team_data.custom_select(["team_uuid", "team_name"]).custom_distinct(),
-            custom_on=["team_uuid"],
             custom_how="left",
         )
         player_stats.data = player_stats.data.filter(pl.col("did_play") == 1)
@@ -709,15 +717,50 @@ def generate_table_enriched(table_name: str) -> bool:
             custom_how="left",
         )
 
+        player_stats = player_stats.custom_join(
+            game_data.custom_select(
+                [
+                    "game_uuid",
+                    "team_uuid",
+                    "team_uuid_opponent",
+                    "game_time",
+                    "season",
+                    "team_type",
+                ]
+            ),
+            custom_on=["game_uuid", "team_uuid"],
+            custom_how="left",
+        ).custom_join(
+            team_data.custom_select(["team_uuid", "team_name","team_short_name"]).custom_distinct(),
+            custom_on=["team_uuid"],
+            custom_how="left",
+        ).custom_join(
+            team_data.custom_select(["team_uuid", "team_name","team_short_name"]).custom_distinct(),
+            custom_left_on=["team_uuid_opponent"],
+            custom_right_on=["team_uuid"],
+            custom_how="left",
+            custom_suffix="_opponent",
+        )
+
+        
+        player_stats.data = player_stats.data.with_columns(
+            pl.col("game_time").cast(pl.Date())
+        )
+
         player_stats = player_stats.custom_select(
-            [
+            [ 
                 "player_uuid",
                 "player_name",
                 "player_number",
                 "team_uuid",
                 "team_name",
+                "team_short_name",
+                "team_uuid_opponent",
+                "team_name_opponent",
+                "team_short_name_opponent",
                 "season",
                 "game_uuid",
+                "game_time",
                 "points",
                 "ft_attempted",
                 "ft_made",
@@ -728,8 +771,6 @@ def generate_table_enriched(table_name: str) -> bool:
                 "avg_plus_minus",
             ]
         ).custom_distinct()
-
-        print(player_stats.data.glimpse())
 
         playergameanalytics_enriched = CustomDF(
             "playergameanalytics_enriched", initial_df=player_stats.data

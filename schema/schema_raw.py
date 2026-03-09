@@ -79,129 +79,8 @@ def get_raw_schema(table_name: str = "") -> dict:
             "partition_column": "",
             "quality_checks": [],
         },
-        "airports_raw": {
-            "columns": {
-                "IATA_CODE": pl.String,
-                "AIRPORT": pl.String,
-                "CITY": pl.String,
-                "STATE": pl.String,
-                "COUNTRY": pl.String,
-                "LATITUDE": pl.Decimal(25, 10),
-                "LONGITUDE": pl.Decimal(25, 10),
-                "from_date": pl.Date,
-                "to_date": pl.Date,
-                "RecordID": pl.String,
-            },
-            "container": "raw",
-            "location": "airports",
-            "file_format": "parquet",
-            "partition_column": "",
-            "quality_checks": [
-                {"check": "values are unique", "columns": ["IATA_CODE"]}
-            ],
-        },
-        "airlines_raw": {
-            "columns": {
-                "IATA_CODE": pl.String,
-                "AIRLINE": pl.String,
-                "from_date": pl.Date,
-                "to_date": pl.Date,
-                "RecordID": pl.String,
-            },
-            "container": "raw",
-            "location": "airlines",
-            "file_format": "parquet",
-            "partition_column": "",
-            "quality_checks": [],
-        },
-        "cancellation_codes_raw": {
-            "columns": {
-                "CANCELLATION_REASON": pl.String,
-                "CANCELLATION_DESCRIPTION": pl.String,
-                "from_date": pl.Date,
-                "to_date": pl.Date,
-                "RecordID": pl.String,
-            },
-            "container": "raw",
-            "location": "cancellation_codes",
-            "file_format": "parquet",
-            "partition_column": "",
-            "quality_checks": [],
-        },
-        "flights_raw": {
-            "columns": {
-                "YEAR": pl.Int64,
-                "MONTH": pl.Int64,
-                "DAY": pl.Int64,
-                "DAY_OF_WEEK": pl.Int64,
-                "AIRLINE": pl.String,
-                "FLIGHT_NUMBER": pl.String,
-                "TAIL_NUMBER": pl.String,
-                "ORIGIN_AIRPORT": pl.String,
-                "DESTINATION_AIRPORT": pl.String,
-                "SCHEDULED_DEPARTURE": pl.String,
-                "DEPARTURE_TIME": pl.String,
-                "DEPARTURE_DELAY": pl.Int64,
-                "TAXI_OUT": pl.Int64,
-                "WHEELS_OFF": pl.String,
-                "SCHEDULED_TIME": pl.Int64,
-                "ELAPSED_TIME": pl.Int64,
-                "AIR_TIME": pl.Int64,
-                "DISTANCE": pl.Int64,
-                "WHEELS_ON": pl.String,
-                "TAXI_IN": pl.Int64,
-                "SCHEDULED_ARRIVAL": pl.String,
-                "ARRIVAL_TIME": pl.String,
-                "ARRIVAL_DELAY": pl.Int64,
-                "DIVERTED": pl.Int64,
-                "CANCELLED": pl.Int64,
-                "CANCELLATION_REASON": pl.String,
-                "AIR_SYSTEM_DELAY": pl.Int64,
-                "SECURITY_DELAY": pl.Int64,
-                "AIRLINE_DELAY": pl.Int64,
-                "LATE_AIRCRAFT_DELAY": pl.Int64,
-                "WEATHER_DELAY": pl.Int64,
-                "from_date": pl.Date,
-                "to_date": pl.Date,
-                "RecordID": pl.String,
-            },
-            "container": "raw",
-            "location": "flights",
-            "file_format": "parquet",
-            "partition_column": "",
-            "quality_checks": [
-                {
-                    "check": "values in range",
-                    "columns": ["YEAR"],
-                    "range_start": 1980,
-                    "range_end": 2025,
-                },
-                {
-                    "check": "values have format",
-                    "columns": ["AIRLINE"],
-                    "format": r"[A-Z0-9]{2}",
-                },
-            ],
-        },
-        "timezone_raw": {
-            "columns": {
-                "Airport": pl.String,
-                "TimeZone": pl.String,
-                "TimeZoneOffset": pl.Int64,
-                "from_date": pl.Date,
-                "to_date": pl.Date,
-                "RecordID": pl.String,
-            },
-            "container": "raw",
-            "location": "timezone",
-            "file_format": "parquet",
-            "partition_column": "",
-            "quality_checks": [],
-        },
         "gamedata_raw": {
             "columns": {
-                "teamIdIntern": pl.String,
-                "teamIdExtern": pl.String,
                 "time": pl.Datetime,
                 "localId": pl.String,
                 "visitId": pl.String,
@@ -214,7 +93,9 @@ def get_raw_schema(table_name: str = "") -> dict:
             "location": "gamedata",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["idMatchIntern"]},
+            ],
         },
         "teamdata_raw": {
             "columns": {
@@ -230,7 +111,9 @@ def get_raw_schema(table_name: str = "") -> dict:
             "location": "teamdata",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["teamIdIntern"]}
+            ],
         },
         "playergamedata_raw": {
             "columns": {
@@ -252,7 +135,9 @@ def get_raw_schema(table_name: str = "") -> dict:
             "location": "playergamedata",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["idMatchIntern", "playerUuid"]},
+            ],
         },
         "playersubstitionsgamedata_raw": {
             "columns": {
@@ -301,7 +186,9 @@ def get_raw_schema(table_name: str = "") -> dict:
             "location": "playergamestatsdata",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["idMatchIntern", "playerUuid"]},
+            ],
         },
         "teamgamestatsdata_raw": {
             "columns": {
@@ -327,7 +214,9 @@ def get_raw_schema(table_name: str = "") -> dict:
             "location": "teamgamestatsdata",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["idMatchIntern", "team_uuid"]},
+            ],
         },
         "playergameshotsdata2ptmade_raw": {
             "columns": {
@@ -347,7 +236,9 @@ def get_raw_schema(table_name: str = "") -> dict:
             "location": "playergameshotsdata2ptmade",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["RecordID"]},
+            ],
         },
         "playergameshotsdata3ptmade_raw": {
             "columns": {
@@ -367,7 +258,9 @@ def get_raw_schema(table_name: str = "") -> dict:
             "location": "playergameshotsdata3ptmade",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["RecordID"]},
+            ],
         },
         "playergameshotsdata2ptmissed_raw": {
             "columns": {
@@ -387,7 +280,9 @@ def get_raw_schema(table_name: str = "") -> dict:
             "location": "playergameshotsdata2ptmissed",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["RecordID"]},
+            ],
         },
         "playergameshotsdata3ptmissed_raw": {
             "columns": {
@@ -407,7 +302,9 @@ def get_raw_schema(table_name: str = "") -> dict:
             "location": "playergameshotsdata3ptmissed",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["RecordID"]},
+            ],
         },
         "gameteamscoresdata_raw": {
             "columns": {
@@ -425,7 +322,9 @@ def get_raw_schema(table_name: str = "") -> dict:
             "location": "gameteamscoresdata",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["idMatchIntern", "minuteAbsolute","local","visit"]},
+            ],
         },
         "gamedatametadata_raw": {
             "columns": {
@@ -443,7 +342,9 @@ def get_raw_schema(table_name: str = "") -> dict:
             "location": "gamedatametadata",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["uuid"]},
+            ],
         },
     }
 

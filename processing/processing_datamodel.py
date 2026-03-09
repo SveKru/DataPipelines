@@ -397,6 +397,10 @@ def generate_table_datamodel(table_name: str) -> bool:
         )
         playerdata_raw = playerdata_raw.custom_distinct()
 
+        playerdata_raw = playerdata_raw.custom_groupby(
+            ["player_uuid", "team_uuid", "player_name"], pl.min("player_number").alias("player_number")
+        )
+
         playerdata_datamodel = CustomDF(
             "playerdata_datamodel", initial_df=playerdata_raw.data
         )
@@ -522,6 +526,8 @@ def generate_table_datamodel(table_name: str) -> bool:
             ]
         )
 
+        playersubstitionsgamedata_raw = playersubstitionsgamedata_raw.custom_distinct()
+
         playersubstitionsgamedata_raw.convert_data_types(
             ["minute_absolute", "point_diff"], pl.Int64
         )
@@ -550,6 +556,9 @@ def generate_table_datamodel(table_name: str) -> bool:
         )
 
         teamdata_raw = teamdata_raw.custom_distinct()
+        teamdata_raw = teamdata_raw.custom_groupby(
+            ["team_uuid"], pl.min("team_name").alias("team_name"), pl.min("team_short_name").alias("team_short_name")
+        )
 
         teamdata_datamodel = CustomDF(
             "teamdata_datamodel", initial_df=teamdata_raw.data

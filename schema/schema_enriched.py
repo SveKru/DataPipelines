@@ -79,25 +79,6 @@ def get_enriched_schema(table_name: str = "") -> dict:
             "partition_column": "",
             "quality_checks": [],
         },
-        "flight_airport_departures_enriched": {
-            "columns": {
-                "Flight_Date": pl.Date,
-                "Airline_Name": pl.String,
-                "Airport_Name": pl.String,
-                "Amount_Flights": pl.UInt32,
-                "Average_Delay": pl.Float64,
-                "Average_Taxi": pl.Float64,
-                "Max_Delay": pl.Int64,
-                "from_date": pl.Date,
-                "to_date": pl.Date,
-                "RecordID": pl.String,
-            },
-            "container": "enriched",
-            "location": "flight_airport_departures",
-            "file_format": "parquet",
-            "partition_column": "",
-            "quality_checks": [],
-        },
         "playergameplusminus_enriched": {
             "columns": {
                 "player_uuid": pl.String,
@@ -112,7 +93,9 @@ def get_enriched_schema(table_name: str = "") -> dict:
             "location": "playergameplusminus",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["game_uuid", "player_uuid"]},
+            ],
         },
         "playerplusminus_enriched": {
             "columns": {
@@ -127,7 +110,9 @@ def get_enriched_schema(table_name: str = "") -> dict:
             "location": "playerplusminus",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["player_uuid"]},
+            ],
         },
         "playerstatssummary_enriched": {
             "columns": {
@@ -157,7 +142,9 @@ def get_enriched_schema(table_name: str = "") -> dict:
             "location": "playerstatssummary",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["player_uuid", "season"]},
+            ],
         },
         "player2ptsummary_enriched": {
             "columns": {
@@ -179,7 +166,9 @@ def get_enriched_schema(table_name: str = "") -> dict:
             "location": "player2ptsummary",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["player_uuid", "season"]},
+            ],
         },
         "player3ptsummary_enriched": {
             "columns": {
@@ -201,7 +190,9 @@ def get_enriched_schema(table_name: str = "") -> dict:
             "location": "player3ptsummary",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["player_uuid", "season"]},
+            ],
         },
         "playeranalytics_enriched": {
             "columns": {
@@ -253,7 +244,9 @@ def get_enriched_schema(table_name: str = "") -> dict:
             "location": "playeranalytics",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["player_uuid", "season"]},
+            ],
         },
         "teamstatssummary_enriched": {
             "columns": {
@@ -281,7 +274,9 @@ def get_enriched_schema(table_name: str = "") -> dict:
             "location": "teamstatssummary",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["team_uuid", "season"]},
+            ],
         },
         "opponentsstatssummary_enriched": {
             "columns": {
@@ -303,7 +298,9 @@ def get_enriched_schema(table_name: str = "") -> dict:
             "location": "opponentsstatssummary",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["team_uuid", "season"]},
+            ],
         },
         "opponentstrendssummary_enriched": {
             "columns": {
@@ -322,7 +319,9 @@ def get_enriched_schema(table_name: str = "") -> dict:
             "location": "opponentstrendssummary",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["team_uuid", "season"]},
+            ],
         },
         "teamanalytics_enriched": {
             "columns": {
@@ -381,7 +380,9 @@ def get_enriched_schema(table_name: str = "") -> dict:
             "location": "teamanalytics",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["team_uuid", "season"]},
+            ],
         },
         "teamgameanalytics_enriched": {
             "columns": {
@@ -421,7 +422,9 @@ def get_enriched_schema(table_name: str = "") -> dict:
             "location": "teamgameanalytics",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["game_uuid", "team_uuid"]},
+            ],
         },
         "playergameanalytics_enriched": {
             "columns": {
@@ -430,8 +433,13 @@ def get_enriched_schema(table_name: str = "") -> dict:
                 "player_number":pl.Int16,
                 "team_uuid":pl.String,
                 "team_name":pl.String,
+                "team_short_name":pl.String,
+                "team_uuid_opponent": pl.String,
+                "team_name_opponent": pl.String,
+                "team_short_name_opponent": pl.String,
                 "season":pl.Int64,
                 "game_uuid":pl.String,
+                "game_time":pl.Date,
                 "points":pl.Int64,
                 "ft_attempted":pl.Int64,
                 "ft_made":pl.Int64,
@@ -448,7 +456,9 @@ def get_enriched_schema(table_name: str = "") -> dict:
             "location": "playergameanalytics",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["game_uuid", "player_uuid"]},
+            ],
         },
     }
 

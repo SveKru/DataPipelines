@@ -68,6 +68,7 @@ def generate_table_raw(table_name: str) -> bool:
             .alias("time")
         )
         gamedata_landingzone.data = gamedata_landingzone.data.drop("file_name")
+        gamedata_landingzone.data = gamedata_landingzone.data.unique()
 
         gamedata_raw = CustomDF("gamedata_raw", initial_df=gamedata_landingzone.data)
         gamedata_raw.write_table()
@@ -119,6 +120,10 @@ def generate_table_raw(table_name: str) -> bool:
                 "idMatchIntern",
             ]
         )
+        playergamedata_landingzone.data = playergamedata_landingzone.data.filter(
+            pl.col("playerUuid").is_not_null()
+        )
+        playergamedata_landingzone.data = playergamedata_landingzone.data.unique()
         playergamedata_raw = CustomDF(
             "playergamedata_raw", initial_df=playergamedata_landingzone.data
         )
@@ -158,6 +163,7 @@ def generate_table_raw(table_name: str) -> bool:
             )
         )
 
+        playersubstitionsgamedata_landingzone.data = playersubstitionsgamedata_landingzone.data.unique()
         playersubstitionsgamedata_raw = CustomDF(
             "playersubstitionsgamedata_raw",
             initial_df=playersubstitionsgamedata_landingzone.data,
@@ -204,6 +210,10 @@ def generate_table_raw(table_name: str) -> bool:
         )
         playergamestatsdata_landingzone.convert_data_types(
             ["gamePlayed", "timePlayed"], pl.Int16
+        )
+
+        playergamestatsdata_landingzone.data = playergamestatsdata_landingzone.data.filter(
+            pl.col("playerUuid").is_not_null()
         )
 
         playergamestatsdata_raw = CustomDF(
@@ -484,6 +494,8 @@ def generate_table_raw(table_name: str) -> bool:
                 "period",
             ]
         )
+
+        gameteamscoresdata_landingzone.data = gameteamscoresdata_landingzone.data.unique()
 
         gameteamscoresdata_raw = CustomDF(
             "gameteamscoresdata_raw", initial_df=gameteamscoresdata_landingzone.data

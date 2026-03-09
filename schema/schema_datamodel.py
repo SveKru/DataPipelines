@@ -79,82 +79,6 @@ def get_datamodel_schema(table_name: str = "") -> dict:
             "partition_column": "",
             "quality_checks": [],
         },
-        "flights_datamodel": {
-            "columns": {
-                "Flight_Date": pl.Date,
-                "Weekday": pl.Int64,
-                "Airline_Code": pl.String,
-                "Flight_Number": pl.String,
-                "Tail_Number": pl.String,
-                "Origin_Airport": pl.String,
-                "Destination_Airport": pl.String,
-                "Scheduled_Departure": pl.Datetime,
-                "Departure_Time": pl.Datetime,
-                "Departure_Delay": pl.Int64,
-                "Taxi_Out": pl.Int64,
-                "Wheels_Off": pl.Datetime,
-                "Scheduled_Time": pl.Int64,
-                "Elapsed_Time": pl.Int64,
-                "Air_Time": pl.Int64,
-                "Distance": pl.Int64,
-                "Wheels_On": pl.Datetime,
-                "Taxi_In": pl.Int64,
-                "Scheduled_Arrival": pl.Datetime,
-                "Arrival_Time": pl.Datetime,
-                "Arrival_Delay": pl.Int64,
-                "Diverted": pl.Boolean,
-                "Cancelled": pl.Boolean,
-                "Cancellation_Reason": pl.String,
-                "Air_System_Delay": pl.Int64,
-                "Security_Delay": pl.Int64,
-                "Airline_Delay": pl.Int64,
-                "Late_Aircraft_Delay": pl.Int64,
-                "Weather_Delay": pl.Int64,
-                "from_date": pl.Date,
-                "to_date": pl.Date,
-                "RecordID": pl.String,
-            },
-            "container": "datamodel",
-            "location": "flights",
-            "file_format": "parquet",
-            "partition_column": "",
-            "quality_checks": [],
-        },
-        "airports_datamodel": {
-            "columns": {
-                "IATA_Airport_Code": pl.String,
-                "Airport": pl.String,
-                "City": pl.String,
-                "State": pl.String,
-                "Country": pl.String,
-                "Latitude": pl.Decimal(25, 10),
-                "Longitude": pl.Decimal(25, 10),
-                "from_date": pl.Date,
-                "to_date": pl.Date,
-                "RecordID": pl.String,
-            },
-            "container": "datamodel",
-            "location": "airports",
-            "file_format": "parquet",
-            "partition_column": "",
-            "quality_checks": [
-                {"check": "values are unique", "columns": ["IATA_Airport_Code"]}
-            ],
-        },
-        "airlines_datamodel": {
-            "columns": {
-                "IATA_Airline_Code": pl.String,
-                "Airline": pl.String,
-                "from_date": pl.Date,
-                "to_date": pl.Date,
-                "RecordID": pl.String,
-            },
-            "container": "datamodel",
-            "location": "airlines",
-            "file_format": "parquet",
-            "partition_column": "",
-            "quality_checks": [],
-        },
         "gamedata_datamodel": {
             "columns": {
                 "game_uuid": pl.String,
@@ -173,7 +97,9 @@ def get_datamodel_schema(table_name: str = "") -> dict:
             "location": "gamedata",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["game_uuid", "team_uuid"]},
+            ],
         },
         "gameteamscoresdata_datamodel": {
             "columns": {
@@ -193,7 +119,9 @@ def get_datamodel_schema(table_name: str = "") -> dict:
             "location": "gameteamscoresdata",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["game_uuid", "minuteAbsolute","home_score","away_score"]},
+            ],
         },
         "playerdata_datamodel": {
             "columns": {
@@ -209,7 +137,9 @@ def get_datamodel_schema(table_name: str = "") -> dict:
             "location": "playerdata",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["player_uuid","team_uuid","player_name"]},
+            ],
         },
         "playergamestatsdata_datamodel": {
             "columns": {
@@ -236,7 +166,9 @@ def get_datamodel_schema(table_name: str = "") -> dict:
             "location": "playergamestatsdata",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["game_uuid", "player_uuid"]},
+            ],
         },
         "playergameshotsdata_datamodel": {
             "columns": {
@@ -256,7 +188,9 @@ def get_datamodel_schema(table_name: str = "") -> dict:
             "location": "playergameshotsdata",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["RecordID"]},
+            ],
         },
         "teamgamestatsdata_datamodel": {
             "columns": {
@@ -281,7 +215,9 @@ def get_datamodel_schema(table_name: str = "") -> dict:
             "location": "teamgamestatsdata",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["game_uuid", "team_uuid"]},
+            ],
         },
         "playergamesubstitionsgamedata_datamodel": {
             "columns": {
@@ -298,7 +234,9 @@ def get_datamodel_schema(table_name: str = "") -> dict:
             "location": "playergamesubstitionsgamedata",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["game_uuid", "player_uuid", "type", "minute_absolute","point_diff"]},
+            ],
         },
         "teamdata_datamodel": {
             "columns": {
@@ -313,7 +251,9 @@ def get_datamodel_schema(table_name: str = "") -> dict:
             "location": "teamdata",
             "file_format": "parquet",
             "partition_column": "",
-            "quality_checks": [],
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["team_uuid"]},
+            ],
         },
     }
 
