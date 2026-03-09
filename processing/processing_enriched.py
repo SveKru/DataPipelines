@@ -267,6 +267,7 @@ def generate_table_enriched(table_name: str) -> bool:
         player_plusminus = CustomDF("playerplusminus_enriched")
         player_2pointers = CustomDF("player2ptsummary_enriched")
         player_3pointers = CustomDF("player3ptsummary_enriched")
+        player_impact = CustomDF("playergameimpact_enriched")
 
         player_data = player_data.custom_select(
             ["player_uuid", "team_uuid", "player_name", "player_number"]
@@ -278,6 +279,18 @@ def generate_table_enriched(table_name: str) -> bool:
 
         player_data.data = player_data.data.unique(subset=["player_uuid"], keep="first")
         team_data.data = team_data.data.unique(subset=["team_uuid"], keep="first")
+
+        # Aggregate per-game impact metrics to career averages per player
+        player_impact_avg = player_impact.custom_select(
+            ["player_uuid", "offensive_points_on_court", "defensive_points_on_court",
+             "offensive_points_per_minute", "defensive_points_per_minute"]
+        ).custom_groupby(
+            ["player_uuid"],
+            pl.mean("offensive_points_on_court").alias("avg_offensive_points_on_court"),
+            pl.mean("defensive_points_on_court").alias("avg_defensive_points_on_court"),
+            pl.mean("offensive_points_per_minute").alias("avg_offensive_points_per_minute"),
+            pl.mean("defensive_points_per_minute").alias("avg_defensive_points_per_minute"),
+        )
 
         player_data = (
             player_data.custom_join(
@@ -292,6 +305,11 @@ def generate_table_enriched(table_name: str) -> bool:
             )
             .custom_join(
                 player_plusminus.custom_drop(["from_date", "to_date", "RecordID"]),
+                custom_on=["player_uuid"],
+                custom_how="left",
+            )
+            .custom_join(
+                player_impact_avg,
                 custom_on=["player_uuid"],
                 custom_how="left",
             )
@@ -333,6 +351,10 @@ def generate_table_enriched(table_name: str) -> bool:
                 "max_points",
                 "total_plus_minus",
                 "avg_plus_minus",
+                "avg_offensive_points_on_court",
+                "avg_defensive_points_on_court",
+                "avg_offensive_points_per_minute",
+                "avg_defensive_points_per_minute",
                 "twopoint_locations",
                 "threepoint_locations",
             ]

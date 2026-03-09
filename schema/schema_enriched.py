@@ -220,6 +220,10 @@ def get_enriched_schema(table_name: str = "") -> dict:
                 "max_points": pl.Int64,
                 "total_plus_minus": pl.Int64,
                 "avg_plus_minus": pl.Float64,
+                "avg_offensive_points_on_court": pl.Float64,
+                "avg_defensive_points_on_court": pl.Float64,
+                "avg_offensive_points_per_minute": pl.Float64,
+                "avg_defensive_points_per_minute": pl.Float64,
                 "twopoint_locations": pl.List(
                     pl.Struct(
                         [
@@ -246,6 +250,26 @@ def get_enriched_schema(table_name: str = "") -> dict:
             "partition_column": "",
             "quality_checks": [
                 {"check": "values are unique", "columns": ["player_uuid", "season"]},
+            ],
+        },
+        "playergameimpact_enriched": {
+            "columns": {
+                "player_uuid": pl.String,
+                "game_uuid": pl.String,
+                "offensive_points_on_court": pl.Int64,
+                "defensive_points_on_court": pl.Int64,
+                "offensive_points_per_minute": pl.Float64,
+                "defensive_points_per_minute": pl.Float64,
+                "from_date": pl.Date,
+                "to_date": pl.Date,
+                "RecordID": pl.String,
+            },
+            "container": "enriched",
+            "location": "playergameimpact",
+            "file_format": "parquet",
+            "partition_column": "",
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["game_uuid", "player_uuid"]},
             ],
         },
         "teamstatssummary_enriched": {
@@ -448,6 +472,10 @@ def get_enriched_schema(table_name: str = "") -> dict:
                 "minutes_played":pl.Int16,
                 "total_plus_minus":pl.Int64,
                 "avg_plus_minus":pl.Float64,
+                "offensive_points_on_court":pl.Int64,
+                "defensive_points_on_court":pl.Int64,
+                "offensive_points_per_minute": pl.Float64,
+                "defensive_points_per_minute": pl.Float64,
                 "from_date": pl.Date,
                 "to_date": pl.Date,
                 "RecordID": pl.String,
