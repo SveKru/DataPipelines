@@ -1305,17 +1305,39 @@ def generate_table_enriched(table_name: str) -> bool:
         playergamestats = CustomDF("playergamestatsdata_datamodel")
         teamgamestats = CustomDF("teamgamestatsdata_datamodel")
         teamdata = CustomDF("teamdata_datamodel")
+        playerdata = CustomDF("playerdata_datamodel")
 
-        # Get players who played in each game with their team
-        # Join game data with player stats to get who played
-        # Note: gamedata already has team_uuid from the game perspective
-        game_players = gamedata.custom_join(
-            playergamestats,
-            custom_on=["game_uuid"],
-            custom_how="inner",
+        # CRITICAL FIX: First join playergamestats with playerdata to get correct team_uuid
+        # The playergamestats table doesn't have team_uuid, so we must get it from playerdata
+        # to avoid assigning players to both teams in a game
+        player_with_team = playergamestats.custom_join(
+            playerdata.custom_select(["player_uuid", "team_uuid"]),
+            custom_on="player_uuid",
+            custom_how="left",
         )
 
-        # Select relevant columns (team_uuid comes from gamedata)
+        # Now join with gamedata using BOTH game_uuid AND team_uuid
+        # This ensures each player is only associated with their actual team
+        # Use polars join directly for multi-key join (custom_join only supports single key)
+        game_data_subset = gamedata.custom_select(["game_uuid", "team_uuid", "season"])
+
+        # Perform the join directly on the underlying dataframes
+        joined_data = player_with_team.data.join(
+            game_data_subset.data,
+            on=["game_uuid", "team_uuid"],
+            how="inner"
+        )
+
+        # Drop any duplicate map columns from the right side
+        cols_to_drop = [col for col in joined_data.columns if col.endswith("_right") and col.startswith("map_")]
+        if cols_to_drop:
+            joined_data = joined_data.drop(cols_to_drop)
+
+        # Update the CustomDF with the joined data
+        player_with_team.data = joined_data
+        game_players = player_with_team
+
+        # Select relevant columns
         game_players = game_players.custom_select([
             "game_uuid", "player_uuid", "team_uuid", "season", "minutes_played", "did_play"
         ])
