@@ -1301,173 +1301,190 @@ def generate_table_enriched(table_name: str) -> bool:
 
     elif table_name == "lineupeffectiveness_enriched":
         # Load necessary data
+        from collections import defaultdict
+
         gamedata = CustomDF("gamedata_datamodel")
-        playergamestats = CustomDF("playergamestatsdata_datamodel")
+        subs_df = CustomDF("playergamesubstitionsgamedata_datamodel")
         teamgamestats = CustomDF("teamgamestatsdata_datamodel")
         teamdata = CustomDF("teamdata_datamodel")
         playerdata = CustomDF("playerdata_datamodel")
 
-        # CRITICAL FIX: First join playergamestats with playerdata to get correct team_uuid
-        # The playergamestats table doesn't have team_uuid, so we must get it from playerdata
-        # to avoid assigning players to both teams in a game
-        player_with_team = playergamestats.custom_join(
-            playerdata.custom_select(["player_uuid", "team_uuid"]),
-            custom_on="player_uuid",
-            custom_how="left",
-        )
+        print("\n>> Building lineups from substitution patterns...")
 
-        # Now join with gamedata using BOTH game_uuid AND team_uuid
-        # This ensures each player is only associated with their actual team
-        # Use polars join directly for multi-key join (custom_join only supports single key)
-        game_data_subset = gamedata.custom_select(["game_uuid", "team_uuid", "season"])
+        # Get all teams and seasons
+        teams_seasons = gamedata.data.select(["team_uuid", "season"]).unique()
 
-        # Perform the join directly on the underlying dataframes
-        joined_data = player_with_team.data.join(
-            game_data_subset.data,
-            on=["game_uuid", "team_uuid"],
-            how="inner"
-        )
+        # Track lineup combinations across all teams/seasons
+        all_lineup_data = []
 
-        # Drop any duplicate map columns from the right side
-        cols_to_drop = [col for col in joined_data.columns if col.endswith("_right") and col.startswith("map_")]
-        if cols_to_drop:
-            joined_data = joined_data.drop(cols_to_drop)
+        for team_season in teams_seasons.iter_rows(named=True):
+            team_uuid = team_season["team_uuid"]
+            season = team_season["season"]
 
-        # Update the CustomDF with the joined data
-        player_with_team.data = joined_data
-        game_players = player_with_team
+            # Get games for this team/season
+            team_games = gamedata.data.filter(
+                (pl.col("team_uuid") == team_uuid) &
+                (pl.col("season") == season)
+            )
+            game_uuids = team_games["game_uuid"].to_list()
 
-        # Select relevant columns
-        game_players = game_players.custom_select([
-            "game_uuid", "player_uuid", "team_uuid", "season", "minutes_played", "did_play"
-        ])
+            if len(game_uuids) == 0:
+                continue
 
-        # Filter to only players who actually played
-        game_players.data = game_players.data.filter(
-            (pl.col("did_play") == True) & (pl.col("minutes_played") > 0)
-        )
+            # Get team player UUIDs
+            team_player_uuids = playerdata.data.filter(
+                pl.col("team_uuid") == team_uuid
+            )["player_uuid"].to_list()
 
-        # For each game-team, get the top 5 players by minutes played (core rotation)
-        # This approximates the most-used lineup combination
-        game_players.data = game_players.data.sort(["game_uuid", "team_uuid", "minutes_played"], descending=[False, False, True])
+            if len(team_player_uuids) == 0:
+                continue
 
-        # Rank players within each game-team by minutes
-        game_players.data = game_players.data.with_columns([
-            pl.col("player_uuid").rank("dense").over(["game_uuid", "team_uuid"]).alias("minute_rank")
-        ])
+            # Filter substitutions for this team
+            team_subs = subs_df.data.filter(
+                (pl.col("game_uuid").is_in(game_uuids)) &
+                (pl.col("player_uuid").is_in(team_player_uuids))
+            ).sort(["game_uuid", "minute_absolute"])
 
-        # Keep only top 5 players per game-team (most commonly played together)
-        game_players.data = game_players.data.filter(pl.col("minute_rank") <= 5)
+            # Track lineup statistics
+            lineup_stats = defaultdict(lambda: {
+                "games": set(),
+                "minutes": 0,
+            })
 
-        # Group to create lineup combinations
-        game_lineups = game_players.custom_groupby(
-            ["game_uuid", "team_uuid", "season"],
-            pl.col("player_uuid").sort().alias("players"),
-            pl.sum("minutes_played").alias("total_minutes"),
-        )
+            # Get game results for this team
+            team_game_results = teamgamestats.data.filter(
+                (pl.col("game_uuid").is_in(game_uuids)) &
+                (pl.col("team_uuid") == team_uuid)
+            )
+            game_points = {row["game_uuid"]: row["points"] for row in team_game_results.iter_rows(named=True)}
 
-        # Verify we have exactly 5 players per lineup
-        game_lineups.data = game_lineups.data.with_columns([
-            pl.col("players").list.len().alias("num_players")
-        ]).filter(pl.col("num_players") == 5)
+            # Get opponent points
+            opponent_results = teamgamestats.data.filter(
+                pl.col("game_uuid").is_in(game_uuids)
+            )
+            game_opponent_points = {}
+            for game_uuid in game_uuids:
+                game_scores = opponent_results.filter(pl.col("game_uuid") == game_uuid)["points"].to_list()
+                if len(game_scores) == 2:
+                    team_score = game_points.get(game_uuid, 0)
+                    opponent_score = [s for s in game_scores if s != team_score]
+                    if len(opponent_score) > 0:
+                        game_opponent_points[game_uuid] = opponent_score[0]
 
-        # Create lineup_id by concatenating sorted player UUIDs
-        game_lineups.data = game_lineups.data.with_columns([
-            pl.col("players").list.join(separator="_").alias("lineup_id"),
-            # Extract individual player positions
-            pl.col("players").list.get(0).alias("player_1_uuid"),
-            pl.col("players").list.get(1).alias("player_2_uuid"),
-            pl.col("players").list.get(2).alias("player_3_uuid"),
-            pl.col("players").list.get(3).alias("player_4_uuid"),
-            pl.col("players").list.get(4).alias("player_5_uuid"),
-        ]).drop(["players", "num_players"])
+            # Process each game to build lineups
+            for game_uuid in game_uuids:
+                game_subs = team_subs.filter(pl.col("game_uuid") == game_uuid).sort("minute_absolute")
 
-        # Join with team game stats to get points scored and allowed
-        team_scores = teamgamestats.custom_select([
-            "game_uuid", "team_uuid", "points"
-        ])
+                if len(game_subs) == 0:
+                    continue
 
-        # Self-join to get opponent points
-        opponent_scores = teamgamestats.custom_select(["game_uuid", "points"])
-        opponent_scores = opponent_scores.custom_groupby(
-            ["game_uuid"],
-            pl.col("points").alias("all_points"),
-        )
-        opponent_scores.data = opponent_scores.data.with_columns([
-            pl.col("all_points").list.len().alias("num_teams")
-        ]).filter(pl.col("num_teams") == 2)
+                # Track current players on court
+                on_court = set()
+                prev_minute = 0
 
-        # Join lineup data with scoring data
-        lineup_scores = game_lineups.custom_join(
-            team_scores,
-            custom_on=["game_uuid", "team_uuid"],
-            custom_how="left",
-        )
+                for row in game_subs.iter_rows(named=True):
+                    player_uuid = row["player_uuid"]
+                    minute = row["minute_absolute"]
+                    sub_type = row["type"]
 
-        # Get opponent points (need to join back with game data)
-        game_opponent_points = gamedata.custom_join(
-            teamgamestats,
-            custom_on=["game_uuid", "team_uuid"],
-            custom_how="inner",
-        ).custom_select(["game_uuid", "team_uuid", "points"])
+                    # Record lineup before this substitution
+                    if len(on_court) == 5 and minute > prev_minute:
+                        lineup_key = tuple(sorted(on_court))
+                        minutes_played = minute - prev_minute
 
-        # Self-join to get opponent points
-        opponent_data = teamgamestats.custom_select(["game_uuid", "points"])
-        game_opponent_points = game_opponent_points.custom_join(
-            opponent_data,
-            custom_on=["game_uuid"],
-            custom_how="inner",
-            custom_suffix="_opponent",
-        )
+                        lineup_stats[lineup_key]["games"].add(game_uuid)
+                        lineup_stats[lineup_key]["minutes"] += minutes_played
 
-        # Filter where points != points_opponent to avoid self-matches
-        game_opponent_points.data = game_opponent_points.data.filter(
-            pl.col("points") != pl.col("points_opponent")
-        ).with_columns([
-            (pl.col("points") - pl.col("points_opponent")).alias("margin"),
-            (pl.col("points") > pl.col("points_opponent")).cast(pl.Int32).alias("win"),
-        ]).drop("points_opponent")
+                    # Apply substitution
+                    if sub_type == "IN_TYPE":
+                        on_court.add(player_uuid)
+                    elif sub_type == "OUT_TYPE":
+                        on_court.discard(player_uuid)
 
-        # Join lineup scores with opponent data
-        lineup_scores = lineup_scores.custom_join(
-            game_opponent_points.custom_select(["game_uuid", "team_uuid", "margin", "win"]),
-            custom_on=["game_uuid", "team_uuid"],
-            custom_how="left",
-        )
+                    prev_minute = minute
 
-        # Calculate points_allowed from margin
-        lineup_scores.data = lineup_scores.data.with_columns([
-            (pl.col("points") - pl.col("margin")).alias("points_allowed")
-        ])
+                # Final lineup until end of game (40 minutes)
+                if len(on_court) == 5 and prev_minute < 40:
+                    lineup_key = tuple(sorted(on_court))
+                    minutes_played = 40 - prev_minute
+                    lineup_stats[lineup_key]["games"].add(game_uuid)
+                    lineup_stats[lineup_key]["minutes"] += minutes_played
 
-        # Aggregate by lineup
-        lineup_agg = lineup_scores.custom_groupby(
-            ["team_uuid", "season", "lineup_id", "player_1_uuid", "player_2_uuid",
-             "player_3_uuid", "player_4_uuid", "player_5_uuid"],
-            pl.len().alias("games_played"),
-            pl.mean("total_minutes").alias("total_minutes"),
-            pl.sum("points").alias("points_scored"),
-            pl.sum("points_allowed").alias("points_allowed"),
-            pl.sum("margin").alias("plus_minus"),
-            pl.mean("win").alias("win_rate"),
-        )
+            # Convert lineup stats to records, filtering for >20 minutes total
+            for lineup_key, stats in lineup_stats.items():
+                total_minutes = stats["minutes"]
 
-        # Calculate offensive and defensive ratings (points per 100 possessions approximation)
-        # Using minutes as proxy for possessions
-        lineup_agg.data = lineup_agg.data.with_columns([
-            ((pl.col("points_scored") / pl.col("total_minutes")) * 100).alias("offensive_rating"),
-            ((pl.col("points_allowed") / pl.col("total_minutes")) * 100).alias("defensive_rating"),
-        ])
+                # Filter: only include lineups with >20 total minutes played together
+                # This threshold captures meaningful lineup combinations while filtering noise
+                if total_minutes <= 20:
+                    continue
 
-        # Join with team names
+                games_list = list(stats["games"])
+                games_played = len(games_list)
+
+                # Calculate points scored/allowed for these games
+                points_scored = sum(game_points.get(g, 0) for g in games_list)
+                points_allowed = sum(game_opponent_points.get(g, 0) for g in games_list)
+                plus_minus = points_scored - points_allowed
+
+                # Calculate win rate
+                wins = sum(1 for g in games_list if game_points.get(g, 0) > game_opponent_points.get(g, 0))
+                win_rate = wins / games_played if games_played > 0 else 0.0
+
+                # Calculate ratings
+                offensive_rating = (points_scored / total_minutes) * 100 if total_minutes > 0 else 0.0
+                defensive_rating = (points_allowed / total_minutes) * 100 if total_minutes > 0 else 0.0
+
+                # Create lineup_id and player positions
+                lineup_list = list(lineup_key)
+                lineup_id = "_".join(lineup_list)
+
+                all_lineup_data.append({
+                    "team_uuid": team_uuid,
+                    "season": season,
+                    "lineup_id": lineup_id,
+                    "player_1_uuid": lineup_list[0],
+                    "player_2_uuid": lineup_list[1],
+                    "player_3_uuid": lineup_list[2],
+                    "player_4_uuid": lineup_list[3],
+                    "player_5_uuid": lineup_list[4],
+                    "games_played": games_played,
+                    "total_minutes": total_minutes,
+                    "points_scored": points_scored,
+                    "points_allowed": points_allowed,
+                    "plus_minus": plus_minus,
+                    "offensive_rating": offensive_rating,
+                    "defensive_rating": defensive_rating,
+                    "win_rate": win_rate,
+                })
+
+        print(f">> Found {len(all_lineup_data)} lineups with >20 minutes")
+
+        # Convert to DataFrame
+        lineup_df = pl.DataFrame(all_lineup_data)
+
+        # Join with team names directly using polars
         teamdata_names = teamdata.custom_select(["team_uuid", "team_name"])
         teamdata_names.data = teamdata_names.data.unique(subset=["team_uuid"], keep="first")
 
-        lineup_effectiveness = lineup_agg.custom_join(
-            teamdata_names,
-            custom_on=["team_uuid"],
-            custom_how="left",
-        ).custom_select([
+        # Join on team_uuid
+        lineup_df = lineup_df.join(
+            teamdata_names.data,
+            on="team_uuid",
+            how="left"
+        )
+
+        # Cast to correct schema types and select final columns
+        lineup_df = lineup_df.with_columns([
+            pl.col("games_played").cast(pl.UInt32),
+            pl.col("total_minutes").cast(pl.Float64),
+            pl.col("points_scored").cast(pl.Int64),
+            pl.col("points_allowed").cast(pl.Int64),
+            pl.col("plus_minus").cast(pl.Int64),
+            pl.col("offensive_rating").cast(pl.Float64),
+            pl.col("defensive_rating").cast(pl.Float64),
+            pl.col("win_rate").cast(pl.Float64),
+        ]).select([
             "team_uuid", "team_name", "season", "lineup_id",
             "player_1_uuid", "player_2_uuid", "player_3_uuid", "player_4_uuid", "player_5_uuid",
             "games_played", "total_minutes", "points_scored", "points_allowed",
@@ -1476,7 +1493,7 @@ def generate_table_enriched(table_name: str) -> bool:
 
         CustomDF(
             "lineupeffectiveness_enriched",
-            initial_df=lineup_effectiveness.data
+            initial_df=lineup_df
         ).write_table()
 
     else:
