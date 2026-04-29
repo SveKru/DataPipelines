@@ -1299,7 +1299,211 @@ def generate_table_enriched(table_name: str) -> bool:
             initial_df=quarter_performance.data
         ).write_table()
 
-    elif table_name == "lineupeffectiveness_enriched":
+    elif table_name == "threeplayer_combinations_enriched":
+        # Load necessary data
+        from collections import defaultdict
+        from itertools import combinations
+
+        gamedata = CustomDF("gamedata_datamodel")
+        subs_df = CustomDF("playergamesubstitionsgamedata_datamodel")
+        teamgamestats = CustomDF("teamgamestatsdata_datamodel")
+        teamdata = CustomDF("teamdata_datamodel")
+        playerdata = CustomDF("playerdata_datamodel")
+
+        print("\n>> Building per-game 3-player combinations from substitution patterns...")
+
+        # Get all teams and seasons
+        teams_seasons = gamedata.data.select(["team_uuid", "season"]).unique()
+
+        # Track 3-player combination data PER GAME (not aggregated)
+        all_combo_data = []
+
+        for team_season in teams_seasons.iter_rows(named=True):
+            team_uuid = team_season["team_uuid"]
+            season = team_season["season"]
+
+            # Get games for this team/season
+            team_games = gamedata.data.filter(
+                (pl.col("team_uuid") == team_uuid) &
+                (pl.col("season") == season)
+            )
+            game_uuids = team_games["game_uuid"].to_list()
+
+            if len(game_uuids) == 0:
+                continue
+
+            # Get team player UUIDs
+            team_player_uuids = playerdata.data.filter(
+                pl.col("team_uuid") == team_uuid
+            )["player_uuid"].to_list()
+
+            if len(team_player_uuids) == 0:
+                continue
+
+            # Filter substitutions for this team (exclude DNP players with NULL values)
+            team_subs = subs_df.data.filter(
+                (pl.col("game_uuid").is_in(game_uuids)) &
+                (pl.col("player_uuid").is_in(team_player_uuids)) &
+                pl.col("minute_absolute").is_not_null() &
+                pl.col("type").is_not_null()
+            ).sort(["game_uuid", "minute_absolute"])
+
+            # Get game metadata
+            game_metadata = {}
+            for game_row in team_games.iter_rows(named=True):
+                game_uuid = game_row["game_uuid"]
+                game_metadata[game_uuid] = {
+                    "game_date": game_row.get("game_time"),
+                    "opponent": game_row.get("opponent_team_name", "")
+                }
+
+            # Process each game to build PER-GAME 3-player combination records
+            for game_uuid in game_uuids:
+                game_subs = team_subs.filter(pl.col("game_uuid") == game_uuid).sort("minute_absolute")
+
+                if len(game_subs) == 0:
+                    continue
+
+                # Get game metadata
+                game_date = game_metadata[game_uuid]["game_date"]
+                opponent = game_metadata[game_uuid]["opponent"]
+
+                # Track combo stats PER GAME
+                game_combo_stats = defaultdict(lambda: {
+                    "minutes": 0,
+                    "plus_minus": 0,
+                })
+
+                on_court = set()
+                prev_minute = 0
+                prev_point_diff = 0
+
+                for row in game_subs.iter_rows(named=True):
+                    player_uuid = row["player_uuid"]
+                    minute = row["minute_absolute"]
+                    sub_type = row["type"]
+                    current_point_diff = row["point_diff"]
+
+                    # For every 5-player lineup, generate all 3-player combinations
+                    if len(on_court) == 5 and minute > prev_minute:
+                        minutes_played = minute - prev_minute
+                        point_diff_change = current_point_diff - prev_point_diff
+
+                        # Generate all 3-player combinations from the 5-player lineup
+                        for combo in combinations(sorted(on_court), 3):
+                            game_combo_stats[combo]["minutes"] += minutes_played
+                            game_combo_stats[combo]["plus_minus"] += point_diff_change
+
+                    if sub_type == "IN_TYPE":
+                        on_court.add(player_uuid)
+                    elif sub_type == "OUT_TYPE":
+                        on_court.discard(player_uuid)
+
+                    prev_minute = minute
+                    prev_point_diff = current_point_diff
+
+                # Handle final lineup
+                if len(on_court) == 5 and prev_minute < 40:
+                    minutes_played = 40 - prev_minute
+
+                    # Get final point diff from last substitution event
+                    final_subs = game_subs.tail(1)
+                    if len(final_subs) > 0:
+                        final_point_diff = final_subs["point_diff"][0]
+                        point_diff_change = final_point_diff - prev_point_diff
+                    else:
+                        point_diff_change = 0
+
+                    for combo in combinations(sorted(on_court), 3):
+                        game_combo_stats[combo]["minutes"] += minutes_played
+                        game_combo_stats[combo]["plus_minus"] += point_diff_change
+
+                # Create a record for each combo in this game (min 1 minute threshold)
+                for combo_key, stats in game_combo_stats.items():
+                    minutes = stats["minutes"]
+
+                    # Filter: only include combos with >= 1 minute in this game
+                    if minutes < 1:
+                        continue
+
+                    plus_minus = stats["plus_minus"]
+
+                    # Determine court result based on plus/minus
+                    if plus_minus > 0:
+                        court_result = "Won"
+                    elif plus_minus < 0:
+                        court_result = "Lost"
+                    else:
+                        court_result = "Draw"
+
+                    # Calculate win_rate based on plus_minus (1.0 if won, 0.0 if lost, 0.5 if draw)
+                    if plus_minus > 0:
+                        win_rate = 1.0
+                    elif plus_minus < 0:
+                        win_rate = 0.0
+                    else:
+                        win_rate = 0.5
+
+                    # Create combo_id
+                    combo_list = list(combo_key)
+                    combo_id = "_".join(combo_list)
+
+                    all_combo_data.append({
+                        "game_uuid": game_uuid,
+                        "team_uuid": team_uuid,
+                        "season": season,
+                        "game_date": game_date,
+                        "opponent": opponent,
+                        "combo_id": combo_id,
+                        "player_1_uuid": combo_list[0],
+                        "player_2_uuid": combo_list[1],
+                        "player_3_uuid": combo_list[2],
+                        "minutes": minutes,
+                        "plus_minus": plus_minus,
+                        "court_result": court_result,
+                        "win_rate": win_rate,
+                    })
+
+        print(f">> Found {len(all_combo_data)} per-game 3-player combination records")
+
+        # Convert to DataFrame
+        combo_df = pl.DataFrame(all_combo_data)
+
+        # Join with team names
+        teamdata_names = teamdata.custom_select(["team_uuid", "team_name"])
+        teamdata_names.data = teamdata_names.data.unique(subset=["team_uuid"], keep="first")
+
+        combo_df = combo_df.join(
+            teamdata_names.data,
+            on="team_uuid",
+            how="left"
+        )
+
+        # Cast and select final columns
+        combo_df = combo_df.with_columns([
+            pl.col("game_uuid").cast(pl.String),
+            pl.col("team_uuid").cast(pl.String),
+            pl.col("team_name").cast(pl.String),
+            pl.col("season").cast(pl.Int64),
+            pl.col("game_date").cast(pl.Date),
+            pl.col("opponent").cast(pl.String),
+            pl.col("combo_id").cast(pl.String),
+            pl.col("minutes").cast(pl.Float64),
+            pl.col("plus_minus").cast(pl.Int64),
+            pl.col("court_result").cast(pl.String),
+            pl.col("win_rate").cast(pl.Float64),
+        ]).select([
+            "game_uuid", "team_uuid", "team_name", "season", "game_date", "opponent", "combo_id",
+            "player_1_uuid", "player_2_uuid", "player_3_uuid",
+            "minutes", "plus_minus", "court_result", "win_rate",
+        ])
+
+        CustomDF(
+            "threeplayer_combinations_enriched",
+            initial_df=combo_df
+        ).write_table()
+
+    elif table_name == "fiveplayer_combinations_enriched":
         # Load necessary data
         from collections import defaultdict
 
@@ -1309,12 +1513,12 @@ def generate_table_enriched(table_name: str) -> bool:
         teamdata = CustomDF("teamdata_datamodel")
         playerdata = CustomDF("playerdata_datamodel")
 
-        print("\n>> Building lineups from substitution patterns...")
+        print("\n>> Building per-game lineup data from substitution patterns...")
 
         # Get all teams and seasons
         teams_seasons = gamedata.data.select(["team_uuid", "season"]).unique()
 
-        # Track lineup combinations across all teams/seasons
+        # Track lineup combinations PER GAME (not aggregated)
         all_lineup_data = []
 
         for team_season in teams_seasons.iter_rows(named=True):
@@ -1347,62 +1551,50 @@ def generate_table_enriched(table_name: str) -> bool:
                 pl.col("type").is_not_null()
             ).sort(["game_uuid", "minute_absolute"])
 
-            # Track lineup statistics including point differential during court time
-            lineup_stats = defaultdict(lambda: {
-                "games": set(),
-                "minutes": 0,
-                "plus_minus": 0,  # Track actual +/- during lineup's court time
-            })
+            # Get game metadata for joining
+            game_metadata = {}
+            for game_row in team_games.iter_rows(named=True):
+                game_uuid = game_row["game_uuid"]
+                game_metadata[game_uuid] = {
+                    "game_date": game_row.get("game_time"),
+                    "opponent": game_row.get("opponent_team_name", "")
+                }
 
-            # Get game results for this team (used for win rate calculation)
-            team_game_results = teamgamestats.data.filter(
-                (pl.col("game_uuid").is_in(game_uuids)) &
-                (pl.col("team_uuid") == team_uuid)
-            )
-            game_points = {row["game_uuid"]: row["points"] for row in team_game_results.iter_rows(named=True)}
-
-            # Get opponent points
-            opponent_results = teamgamestats.data.filter(
-                pl.col("game_uuid").is_in(game_uuids)
-            )
-            game_opponent_points = {}
-            for game_uuid in game_uuids:
-                game_scores = opponent_results.filter(pl.col("game_uuid") == game_uuid)["points"].to_list()
-                if len(game_scores) == 2:
-                    team_score = game_points.get(game_uuid, 0)
-                    opponent_score = [s for s in game_scores if s != team_score]
-                    if len(opponent_score) > 0:
-                        game_opponent_points[game_uuid] = opponent_score[0]
-
-            # Process each game to build lineups with point differential tracking
+            # Process each game to build PER-GAME lineup records
             for game_uuid in game_uuids:
                 game_subs = team_subs.filter(pl.col("game_uuid") == game_uuid).sort("minute_absolute")
 
                 if len(game_subs) == 0:
                     continue
 
-                # Track current players on court and score at each event
+                # Get game metadata
+                game_date = game_metadata[game_uuid]["game_date"]
+                opponent = game_metadata[game_uuid]["opponent"]
+
+                # Track lineup stats PER GAME
+                game_lineup_stats = defaultdict(lambda: {
+                    "minutes": 0,
+                    "plus_minus": 0,
+                })
+
                 on_court = set()
                 prev_minute = 0
-                prev_point_diff = 0  # Track point differential at previous substitution
+                prev_point_diff = 0
 
                 for row in game_subs.iter_rows(named=True):
                     player_uuid = row["player_uuid"]
                     minute = row["minute_absolute"]
                     sub_type = row["type"]
-                    current_point_diff = row["point_diff"]  # Point differential at this moment
+                    current_point_diff = row["point_diff"]
 
-                    # Record lineup before this substitution
+                    # Record lineup before substitution
                     if len(on_court) == 5 and minute > prev_minute:
                         lineup_key = tuple(sorted(on_court))
                         minutes_played = minute - prev_minute
-
-                        # Calculate point differential change during this lineup's court time
                         point_diff_change = current_point_diff - prev_point_diff
 
-                        lineup_stats[lineup_key]["games"].add(game_uuid)
-                        lineup_stats[lineup_key]["minutes"] += minutes_played
-                        lineup_stats[lineup_key]["plus_minus"] += point_diff_change
+                        game_lineup_stats[lineup_key]["minutes"] += minutes_played
+                        game_lineup_stats[lineup_key]["plus_minus"] += point_diff_change
 
                     # Apply substitution
                     if sub_type == "IN_TYPE":
@@ -1414,105 +1606,105 @@ def generate_table_enriched(table_name: str) -> bool:
                     prev_point_diff = current_point_diff
 
                 # Final lineup until end of game (40 minutes)
-                # For the final segment, use the final game score to calculate point differential change
                 if len(on_court) == 5 and prev_minute < 40:
                     lineup_key = tuple(sorted(on_court))
                     minutes_played = 40 - prev_minute
 
-                    # Final point differential is team's final score minus opponent's final score
-                    final_point_diff = game_points.get(game_uuid, 0) - game_opponent_points.get(game_uuid, 0)
-                    point_diff_change = final_point_diff - prev_point_diff
+                    # Get final point diff from last substitution event
+                    final_subs = game_subs.tail(1)
+                    if len(final_subs) > 0:
+                        final_point_diff = final_subs["point_diff"][0]
+                        point_diff_change = final_point_diff - prev_point_diff
+                    else:
+                        point_diff_change = 0
 
-                    lineup_stats[lineup_key]["games"].add(game_uuid)
-                    lineup_stats[lineup_key]["minutes"] += minutes_played
-                    lineup_stats[lineup_key]["plus_minus"] += point_diff_change
+                    game_lineup_stats[lineup_key]["minutes"] += minutes_played
+                    game_lineup_stats[lineup_key]["plus_minus"] += point_diff_change
 
-            # Convert lineup stats to records, filtering for >20 minutes total
-            for lineup_key, stats in lineup_stats.items():
-                total_minutes = stats["minutes"]
+                # Create a record for each lineup in this game (min 1 minute threshold)
+                for lineup_key, stats in game_lineup_stats.items():
+                    minutes = stats["minutes"]
 
-                # Filter: only include lineups with >20 total minutes played together
-                # This threshold captures meaningful lineup combinations while filtering noise
-                if total_minutes <= 20:
-                    continue
+                    # Filter: only include lineups with >= 1 minute in this game
+                    if minutes < 1:
+                        continue
 
-                games_list = list(stats["games"])
-                games_played = len(games_list)
+                    plus_minus = stats["plus_minus"]
 
-                # Plus/minus based on actual court time performance
-                plus_minus = stats["plus_minus"]
+                    # Determine court result based on plus/minus
+                    if plus_minus > 0:
+                        court_result = "Won"
+                    elif plus_minus < 0:
+                        court_result = "Lost"
+                    else:
+                        court_result = "Draw"
 
-                # Calculate points scored/allowed based on game outcomes (for game-level win rate)
-                points_scored = sum(game_points.get(g, 0) for g in games_list)
-                points_allowed = sum(game_opponent_points.get(g, 0) for g in games_list)
+                    # Calculate win_rate based on plus_minus (1.0 if won, 0.0 if lost, 0.5 if draw)
+                    if plus_minus > 0:
+                        win_rate = 1.0
+                    elif plus_minus < 0:
+                        win_rate = 0.0
+                    else:
+                        win_rate = 0.5
 
-                # Calculate win rate based on game outcomes
-                wins = sum(1 for g in games_list if game_points.get(g, 0) > game_opponent_points.get(g, 0))
-                win_rate = wins / games_played if games_played > 0 else 0.0
+                    # Create lineup_id
+                    lineup_list = list(lineup_key)
+                    lineup_id = "_".join(lineup_list)
 
-                # Calculate ratings based on game totals (approximation)
-                # Note: More accurate would be tracking scores during lineup's actual minutes
-                offensive_rating = (points_scored / total_minutes) * 100 if total_minutes > 0 else 0.0
-                defensive_rating = (points_allowed / total_minutes) * 100 if total_minutes > 0 else 0.0
+                    all_lineup_data.append({
+                        "game_uuid": game_uuid,
+                        "team_uuid": team_uuid,
+                        "season": season,
+                        "game_date": game_date,
+                        "opponent": opponent,
+                        "lineup_id": lineup_id,
+                        "player_1_uuid": lineup_list[0],
+                        "player_2_uuid": lineup_list[1],
+                        "player_3_uuid": lineup_list[2],
+                        "player_4_uuid": lineup_list[3],
+                        "player_5_uuid": lineup_list[4],
+                        "minutes": minutes,
+                        "plus_minus": plus_minus,
+                        "court_result": court_result,
+                        "win_rate": win_rate,
+                    })
 
-                # Create lineup_id and player positions
-                lineup_list = list(lineup_key)
-                lineup_id = "_".join(lineup_list)
-
-                all_lineup_data.append({
-                    "team_uuid": team_uuid,
-                    "season": season,
-                    "lineup_id": lineup_id,
-                    "player_1_uuid": lineup_list[0],
-                    "player_2_uuid": lineup_list[1],
-                    "player_3_uuid": lineup_list[2],
-                    "player_4_uuid": lineup_list[3],
-                    "player_5_uuid": lineup_list[4],
-                    "games_played": games_played,
-                    "total_minutes": total_minutes,
-                    "points_scored": points_scored,
-                    "points_allowed": points_allowed,
-                    "plus_minus": plus_minus,
-                    "offensive_rating": offensive_rating,
-                    "defensive_rating": defensive_rating,
-                    "win_rate": win_rate,
-                })
-
-        print(f">> Found {len(all_lineup_data)} lineups with >20 minutes")
+        print(f">> Found {len(all_lineup_data)} per-game lineup records")
 
         # Convert to DataFrame
         lineup_df = pl.DataFrame(all_lineup_data)
 
-        # Join with team names directly using polars
+        # Join with team names
         teamdata_names = teamdata.custom_select(["team_uuid", "team_name"])
         teamdata_names.data = teamdata_names.data.unique(subset=["team_uuid"], keep="first")
 
-        # Join on team_uuid
         lineup_df = lineup_df.join(
             teamdata_names.data,
             on="team_uuid",
             how="left"
         )
 
-        # Cast to correct schema types and select final columns
+        # Cast and select final columns
         lineup_df = lineup_df.with_columns([
-            pl.col("games_played").cast(pl.UInt32),
-            pl.col("total_minutes").cast(pl.Float64),
-            pl.col("points_scored").cast(pl.Int64),
-            pl.col("points_allowed").cast(pl.Int64),
+            pl.col("game_uuid").cast(pl.String),
+            pl.col("team_uuid").cast(pl.String),
+            pl.col("team_name").cast(pl.String),
+            pl.col("season").cast(pl.Int64),
+            pl.col("game_date").cast(pl.Date),
+            pl.col("opponent").cast(pl.String),
+            pl.col("lineup_id").cast(pl.String),
+            pl.col("minutes").cast(pl.Float64),
             pl.col("plus_minus").cast(pl.Int64),
-            pl.col("offensive_rating").cast(pl.Float64),
-            pl.col("defensive_rating").cast(pl.Float64),
+            pl.col("court_result").cast(pl.String),
             pl.col("win_rate").cast(pl.Float64),
         ]).select([
-            "team_uuid", "team_name", "season", "lineup_id",
+            "game_uuid", "team_uuid", "team_name", "season", "game_date", "opponent", "lineup_id",
             "player_1_uuid", "player_2_uuid", "player_3_uuid", "player_4_uuid", "player_5_uuid",
-            "games_played", "total_minutes", "points_scored", "points_allowed",
-            "plus_minus", "offensive_rating", "defensive_rating", "win_rate",
+            "minutes", "plus_minus", "court_result", "win_rate",
         ])
 
         CustomDF(
-            "lineupeffectiveness_enriched",
+            "fiveplayer_combinations_enriched",
             initial_df=lineup_df
         ).write_table()
 
