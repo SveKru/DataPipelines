@@ -1339,10 +1339,12 @@ def generate_table_enriched(table_name: str) -> bool:
             if len(team_player_uuids) == 0:
                 continue
 
-            # Filter substitutions for this team
+            # Filter substitutions for this team (exclude DNP players with NULL values)
             team_subs = subs_df.data.filter(
                 (pl.col("game_uuid").is_in(game_uuids)) &
-                (pl.col("player_uuid").is_in(team_player_uuids))
+                (pl.col("player_uuid").is_in(team_player_uuids)) &
+                pl.col("minute_absolute").is_not_null() &
+                pl.col("type").is_not_null()
             ).sort(["game_uuid", "minute_absolute"])
 
             # Track lineup statistics including point differential during court time
