@@ -951,6 +951,106 @@ def generate_table_enriched(table_name: str) -> bool:
         )
         playergamequarterstats_enriched.write_table()
 
+    elif table_name == "playergame_shots_enriched":
+        # Load source data
+        shots_data = CustomDF("playergameshotsdata_datamodel")
+        game_data = CustomDF("gamedata_datamodel")
+
+        print("\n>> Building per-game shot location data...")
+
+        # Get game metadata (season, date)
+        game_metadata = game_data.custom_select(["game_uuid", "season", "game_time"]).custom_distinct()
+
+        # Join shots with game metadata
+        shots_with_metadata = shots_data.custom_join(
+            game_metadata,
+            custom_on="game_uuid",
+            custom_how="left"
+        )
+
+        # Group by player and game, collect shot locations by type
+        shots_per_game = shots_with_metadata.custom_groupby(
+            ["player_uuid", "game_uuid", "season", "game_time"],
+            # Collect 2PT locations (shot_type contains '2' or is 'TWO')
+            pl.when(
+                (pl.col("shot_type").str.contains("2")) |
+                (pl.col("shot_type").str.to_uppercase() == "TWO")
+            ).then(
+                pl.struct([
+                    pl.col("xnormalize").cast(pl.Float64).alias("xnormalize"),
+                    pl.col("ynormalize").cast(pl.Float64).alias("ynormalize")
+                ])
+            ).filter(pl.col("shot_type").is_not_null()).alias("twopoint_locations"),
+
+            # Collect 3PT locations (shot_type contains '3' or is 'THREE')
+            pl.when(
+                (pl.col("shot_type").str.contains("3")) |
+                (pl.col("shot_type").str.to_uppercase() == "THREE")
+            ).then(
+                pl.struct([
+                    pl.col("xnormalize").cast(pl.Float64).alias("xnormalize"),
+                    pl.col("ynormalize").cast(pl.Float64).alias("ynormalize")
+                ])
+            ).filter(pl.col("shot_type").is_not_null()).alias("threepoint_locations"),
+
+            # Count made/attempted for validation
+            pl.when(
+                (pl.col("shot_type").str.contains("2")) |
+                (pl.col("shot_type").str.to_uppercase() == "TWO")
+            ).then(1).sum().alias("two_pt_attempted"),
+
+            pl.when(
+                ((pl.col("shot_type").str.contains("2")) |
+                 (pl.col("shot_type").str.to_uppercase() == "TWO")) &
+                (pl.col("outcome").str.to_uppercase() == "MADE")
+            ).then(1).sum().alias("two_pt_made"),
+
+            pl.when(
+                (pl.col("shot_type").str.contains("3")) |
+                (pl.col("shot_type").str.to_uppercase() == "THREE")
+            ).then(1).sum().alias("three_pt_attempted"),
+
+            pl.when(
+                ((pl.col("shot_type").str.contains("3")) |
+                 (pl.col("shot_type").str.to_uppercase() == "THREE")) &
+                (pl.col("outcome").str.to_uppercase() == "MADE")
+            ).then(1).sum().alias("three_pt_made"),
+        )
+
+        # Add game_date column and drop game_time
+        shots_per_game.data = shots_per_game.data.with_columns([
+            pl.col("game_time").cast(pl.Date).alias("game_date")
+        ])
+
+        # Fill nulls for counts and cast to Int64
+        shots_per_game.data = shots_per_game.data.with_columns([
+            pl.col("two_pt_attempted").fill_null(0).cast(pl.Int64),
+            pl.col("two_pt_made").fill_null(0).cast(pl.Int64),
+            pl.col("three_pt_attempted").fill_null(0).cast(pl.Int64),
+            pl.col("three_pt_made").fill_null(0).cast(pl.Int64),
+        ])
+
+        print(f">> Found {len(shots_per_game.data)} player-game shot records")
+
+        # Select final columns in correct order
+        shots_final = shots_per_game.custom_select([
+            "player_uuid",
+            "season",
+            "game_uuid",
+            "game_date",
+            "twopoint_locations",
+            "threepoint_locations",
+            "two_pt_made",
+            "two_pt_attempted",
+            "three_pt_made",
+            "three_pt_attempted",
+        ])
+
+        CustomDF(
+            "playergame_shots_enriched",
+            initial_df=shots_final.data
+        ).write_table()
+
     elif table_name == "playergameanalytics_enriched":
         player_stats = CustomDF("playergamestatsdata_datamodel")
         game_data = CustomDF("gamedata_datamodel")
@@ -1045,8 +1145,16 @@ def generate_table_enriched(table_name: str) -> bool:
             custom_how="left",
         )
 
+        # Join shot locations
+        playergame_shots_enriched = CustomDF("playergame_shots_enriched")
+        player_stats = player_stats.custom_join(
+            playergame_shots_enriched.custom_drop(["from_date", "to_date", "RecordID", "season", "game_date", "two_pt_made", "two_pt_attempted", "three_pt_made", "three_pt_attempted"]),
+            custom_on=["player_uuid", "game_uuid"],
+            custom_how="left",
+        )
+
         player_stats = player_stats.custom_select(
-            [ 
+            [
                 "player_uuid",
                 "player_name",
                 "player_number",
@@ -1074,6 +1182,8 @@ def generate_table_enriched(table_name: str) -> bool:
                 "quarters_started",
                 "quarters_won_when_starting",
                 "quarter_win_rate_when_starting",
+                "twopoint_locations",
+                "threepoint_locations",
             ]
         ).custom_distinct()
 

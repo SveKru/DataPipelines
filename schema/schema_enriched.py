@@ -469,6 +469,44 @@ def get_enriched_schema(table_name: str = "") -> dict:
                 {"check": "values are unique", "columns": ["game_uuid", "player_uuid"]},
             ],
         },
+        "playergame_shots_enriched": {
+            "columns": {
+                "player_uuid": pl.String,
+                "season": pl.Int64,
+                "game_uuid": pl.String,
+                "game_date": pl.Date,
+                "twopoint_locations": pl.List(
+                    pl.Struct(
+                        [
+                            pl.Field("xnormalize", pl.Float64),
+                            pl.Field("ynormalize", pl.Float64),
+                        ]
+                    )
+                ),
+                "threepoint_locations": pl.List(
+                    pl.Struct(
+                        [
+                            pl.Field("xnormalize", pl.Float64),
+                            pl.Field("ynormalize", pl.Float64),
+                        ]
+                    )
+                ),
+                "two_pt_made": pl.Int64,
+                "two_pt_attempted": pl.Int64,
+                "three_pt_made": pl.Int64,
+                "three_pt_attempted": pl.Int64,
+                "from_date": pl.Date,
+                "to_date": pl.Date,
+                "RecordID": pl.String,
+            },
+            "container": "enriched",
+            "location": "playergame_shots",
+            "file_format": "parquet",
+            "partition_column": "",
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["game_uuid", "player_uuid"]},
+            ],
+        },
         "playergameanalytics_enriched": {
             "columns": {
                 "player_uuid":pl.String,
@@ -498,6 +536,22 @@ def get_enriched_schema(table_name: str = "") -> dict:
                 "quarters_started": pl.Int64,
                 "quarters_won_when_starting": pl.Int64,
                 "quarter_win_rate_when_starting": pl.Float64,
+                "twopoint_locations": pl.List(
+                    pl.Struct(
+                        [
+                            pl.Field("xnormalize", pl.Float64),
+                            pl.Field("ynormalize", pl.Float64),
+                        ]
+                    )
+                ),
+                "threepoint_locations": pl.List(
+                    pl.Struct(
+                        [
+                            pl.Field("xnormalize", pl.Float64),
+                            pl.Field("ynormalize", pl.Float64),
+                        ]
+                    )
+                ),
                 "from_date": pl.Date,
                 "to_date": pl.Date,
                 "RecordID": pl.String,
