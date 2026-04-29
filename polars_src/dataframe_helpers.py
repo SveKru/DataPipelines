@@ -31,11 +31,12 @@ def create_sha_values(df: pl.DataFrame, col_list: list) -> pl.DataFrame:
             col_actions.append(
                 pl.col(col_name)
                 .list.eval(pl.element().struct.json_encode())
+                .list.sort()
                 .list.join("|")
                 .alias(col_name)
             )
         elif col_name in list_cols:
-            col_actions.append(pl.col(col_name).list.join("|").alias(col_name))
+            col_actions.append(pl.col(col_name).list.sort().list.join("|").alias(col_name))
         elif col_name in struct_cols:
             col_actions.append(pl.col(col_name).struct.json_encode().alias(col_name))
         else:
@@ -119,6 +120,15 @@ def apply_scd_type_2(
     old_df = existing_table.filter(pl.col("to_date") == future_date).select(
         value_columns + from_to_list
     )
+
+    # Filter out same-day records from old_df - they will be replaced, not versioned
+    # This prevents creating multiple versions when regenerating data on the same day
+    # Scenario: If data is regenerated multiple times in one day, we replace the same-day
+    # record instead of creating a new version (which would result in duplicate RecordIDs)
+    same_day_count = old_df.filter(pl.col("from_date") == processing_date).height
+    if same_day_count > 0:
+        # Drop same-day records - they will be replaced by new data
+        old_df = old_df.filter(pl.col("from_date") != processing_date)
 
     old_df = create_sha_values(old_df, value_columns).rename(
         {"shaValue": "shaValueOld"}

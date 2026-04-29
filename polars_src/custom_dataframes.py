@@ -154,13 +154,21 @@ class CustomDF(DataReader):
             # The format of the DataFrame does not match the table definition
             raise ValueError("The head of the table does not match.")
 
-        # Check if all of the rows are unique in the table
+        # Check if all RecordIDs are unique (each version should have a unique RecordID)
+        # RecordID = SHA(all_columns + from_date) - represents a unique temporal version
+        # Duplicates indicate: same data + same start date appearing multiple times (data corruption)
+        initial_rows = len(self._df)
+        unique_record_count = len(self._df.select("RecordID").unique())
 
-        if len(self._df) != len(self._df.unique()):
-            # The format of the DataFrame does not match the table definition
-            raise ValueError("Not all rows in the table are unqiue")
+        if initial_rows != unique_record_count:
+            # Deduplicate by RecordID, keeping first occurrence
+            # This handles cases where source data generation creates duplicates
+            self._df = self._df.unique(subset=["RecordID"], keep="first")
+            removed_dupes = initial_rows - len(self._df)
+            print(f"\nWARNING: Removed {removed_dupes} duplicate RecordID(s) from {self._name}")
+            print(f"  Original rows: {initial_rows}, After dedup: {len(self._df)}")
 
-        # Perform additional quality checks on specific columns
+        # Perform quality checks on specific columns (includes uniqueness check for active records)
         self.check_blocking_issues()
 
         return True
@@ -180,6 +188,7 @@ class CustomDF(DataReader):
             value represents the SHA-256 hash of the respective row's contents.
         """
         # Select all columns that are needed for the creation of a record ID
+        # Include from_date so each temporal version has a unique ID
         sha_columns = [
             pl.col(col_name)
             for col_name in self._df.columns

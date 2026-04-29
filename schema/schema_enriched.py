@@ -570,6 +570,37 @@ def get_enriched_schema(table_name: str = "") -> dict:
                 {"check": "values are unique", "columns": ["team_uuid", "season", "quarter"]},
             ],
         },
+        "lineupeffectiveness_enriched": {
+            "columns": {
+                "team_uuid": pl.String,
+                "team_name": pl.String,
+                "season": pl.Int64,
+                "lineup_id": pl.String,
+                "player_1_uuid": pl.String,
+                "player_2_uuid": pl.String,
+                "player_3_uuid": pl.String,
+                "player_4_uuid": pl.String,
+                "player_5_uuid": pl.String,
+                "games_played": pl.UInt32,
+                "total_minutes": pl.Float64,
+                "points_scored": pl.Int64,
+                "points_allowed": pl.Int64,
+                "plus_minus": pl.Int64,
+                "offensive_rating": pl.Float64,
+                "defensive_rating": pl.Float64,
+                "win_rate": pl.Float64,
+                "from_date": pl.Date,
+                "to_date": pl.Date,
+                "RecordID": pl.String,
+            },
+            "container": "enriched",
+            "location": "lineupeffectiveness",
+            "file_format": "parquet",
+            "partition_column": "",
+            "quality_checks": [
+                {"check": "values are unique", "columns": ["team_uuid", "season", "lineup_id"]},
+            ],
+        },
     }
 
     if not table_name:

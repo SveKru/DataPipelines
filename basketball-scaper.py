@@ -85,4 +85,7 @@ generate_table_enriched('teamhomeawaysplits_enriched')
 # Generate quarter performance analytics
 generate_table_enriched('teamquarterperformance_enriched')
 
+# Generate lineup effectiveness analytics
+generate_table_enriched('lineupeffectiveness_enriched')
+
 # Export the edges of the datasets
