@@ -1345,13 +1345,14 @@ def generate_table_enriched(table_name: str) -> bool:
                 (pl.col("player_uuid").is_in(team_player_uuids))
             ).sort(["game_uuid", "minute_absolute"])
 
-            # Track lineup statistics
+            # Track lineup statistics including point differential during court time
             lineup_stats = defaultdict(lambda: {
                 "games": set(),
                 "minutes": 0,
+                "plus_minus": 0,  # Track actual +/- during lineup's court time
             })
 
-            # Get game results for this team
+            # Get game results for this team (used for win rate calculation)
             team_game_results = teamgamestats.data.filter(
                 (pl.col("game_uuid").is_in(game_uuids)) &
                 (pl.col("team_uuid") == team_uuid)
@@ -1371,29 +1372,35 @@ def generate_table_enriched(table_name: str) -> bool:
                     if len(opponent_score) > 0:
                         game_opponent_points[game_uuid] = opponent_score[0]
 
-            # Process each game to build lineups
+            # Process each game to build lineups with point differential tracking
             for game_uuid in game_uuids:
                 game_subs = team_subs.filter(pl.col("game_uuid") == game_uuid).sort("minute_absolute")
 
                 if len(game_subs) == 0:
                     continue
 
-                # Track current players on court
+                # Track current players on court and score at each event
                 on_court = set()
                 prev_minute = 0
+                prev_point_diff = 0  # Track point differential at previous substitution
 
                 for row in game_subs.iter_rows(named=True):
                     player_uuid = row["player_uuid"]
                     minute = row["minute_absolute"]
                     sub_type = row["type"]
+                    current_point_diff = row["point_diff"]  # Point differential at this moment
 
                     # Record lineup before this substitution
                     if len(on_court) == 5 and minute > prev_minute:
                         lineup_key = tuple(sorted(on_court))
                         minutes_played = minute - prev_minute
 
+                        # Calculate point differential change during this lineup's court time
+                        point_diff_change = current_point_diff - prev_point_diff
+
                         lineup_stats[lineup_key]["games"].add(game_uuid)
                         lineup_stats[lineup_key]["minutes"] += minutes_played
+                        lineup_stats[lineup_key]["plus_minus"] += point_diff_change
 
                     # Apply substitution
                     if sub_type == "IN_TYPE":
@@ -1402,13 +1409,21 @@ def generate_table_enriched(table_name: str) -> bool:
                         on_court.discard(player_uuid)
 
                     prev_minute = minute
+                    prev_point_diff = current_point_diff
 
                 # Final lineup until end of game (40 minutes)
+                # For the final segment, use the final game score to calculate point differential change
                 if len(on_court) == 5 and prev_minute < 40:
                     lineup_key = tuple(sorted(on_court))
                     minutes_played = 40 - prev_minute
+
+                    # Final point differential is team's final score minus opponent's final score
+                    final_point_diff = game_points.get(game_uuid, 0) - game_opponent_points.get(game_uuid, 0)
+                    point_diff_change = final_point_diff - prev_point_diff
+
                     lineup_stats[lineup_key]["games"].add(game_uuid)
                     lineup_stats[lineup_key]["minutes"] += minutes_played
+                    lineup_stats[lineup_key]["plus_minus"] += point_diff_change
 
             # Convert lineup stats to records, filtering for >20 minutes total
             for lineup_key, stats in lineup_stats.items():
@@ -1422,16 +1437,19 @@ def generate_table_enriched(table_name: str) -> bool:
                 games_list = list(stats["games"])
                 games_played = len(games_list)
 
-                # Calculate points scored/allowed for these games
+                # Plus/minus based on actual court time performance
+                plus_minus = stats["plus_minus"]
+
+                # Calculate points scored/allowed based on game outcomes (for game-level win rate)
                 points_scored = sum(game_points.get(g, 0) for g in games_list)
                 points_allowed = sum(game_opponent_points.get(g, 0) for g in games_list)
-                plus_minus = points_scored - points_allowed
 
-                # Calculate win rate
+                # Calculate win rate based on game outcomes
                 wins = sum(1 for g in games_list if game_points.get(g, 0) > game_opponent_points.get(g, 0))
                 win_rate = wins / games_played if games_played > 0 else 0.0
 
-                # Calculate ratings
+                # Calculate ratings based on game totals (approximation)
+                # Note: More accurate would be tracking scores during lineup's actual minutes
                 offensive_rating = (points_scored / total_minutes) * 100 if total_minutes > 0 else 0.0
                 defensive_rating = (points_allowed / total_minutes) * 100 if total_minutes > 0 else 0.0
 
