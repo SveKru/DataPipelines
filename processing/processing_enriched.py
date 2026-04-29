@@ -300,6 +300,39 @@ def generate_table_enriched(table_name: str) -> bool:
             pl.mean("defensive_points_per_minute").alias("avg_defensive_points_per_minute"),
         )
 
+        # Aggregate quarter stats
+        player_quarter = CustomDF("playergamequarterstats_enriched")
+        game_data_season = CustomDF("gamedata_datamodel")
+        game_data_season.data = game_data_season.data.unique(subset=["game_uuid"], keep="first")
+        game_data_season = game_data_season.custom_select(["game_uuid", "season"])
+
+        player_quarter = player_quarter.custom_join(
+            game_data_season,
+            custom_on="game_uuid",
+            custom_how="left",
+        )
+
+        player_quarter_avg = player_quarter.custom_groupby(
+            ["player_uuid", "season"],
+            pl.mean("quarters_started").alias("avg_quarters_started"),
+            pl.mean("quarters_won_when_starting").alias("avg_quarters_won_when_starting"),
+            pl.mean("quarter_win_rate_when_starting").alias("avg_quarter_win_rate"),
+        )
+
+        # Aggregate clutch performance
+        player_clutch = CustomDF("playerclutchperformance_enriched")
+        player_clutch.data = player_clutch.data.with_columns([
+            pl.when(pl.col("is_clutch_game") == True).then(1).otherwise(0).alias("is_clutch_int"),
+            pl.when(pl.col("game_result") == "Win").then(1).otherwise(0).alias("clutch_win_int")
+        ])
+        player_clutch_avg = player_clutch.custom_groupby(
+            ["player_uuid", "season"],
+            pl.sum("is_clutch_int").cast(pl.Int64).alias("total_clutch_games"),
+            pl.mean("clutch_points").alias("avg_clutch_points"),
+            pl.mean("clutch_shooting_pct").alias("avg_clutch_shooting_pct"),
+            pl.sum("clutch_win_int").cast(pl.Int64).alias("clutch_wins"),
+        )
+
         player_data = (
             player_data.custom_join(
                 player_stats.custom_drop(["from_date", "to_date", "RecordID"]),
@@ -319,6 +352,16 @@ def generate_table_enriched(table_name: str) -> bool:
             .custom_join(
                 player_impact_avg,
                 custom_on=["player_uuid"],
+                custom_how="left",
+            )
+            .custom_join(
+                player_quarter_avg,
+                custom_on=["player_uuid", "season"],
+                custom_how="left",
+            )
+            .custom_join(
+                player_clutch_avg,
+                custom_on=["player_uuid", "season"],
                 custom_how="left",
             )
             .custom_join(
@@ -363,6 +406,13 @@ def generate_table_enriched(table_name: str) -> bool:
                 "avg_defensive_points_on_court",
                 "avg_offensive_points_per_minute",
                 "avg_defensive_points_per_minute",
+                "avg_quarters_started",
+                "avg_quarters_won_when_starting",
+                "avg_quarter_win_rate",
+                "total_clutch_games",
+                "avg_clutch_points",
+                "avg_clutch_shooting_pct",
+                "clutch_wins",
                 "twopoint_locations",
                 "threepoint_locations",
             ]
@@ -672,6 +722,7 @@ def generate_table_enriched(table_name: str) -> bool:
         teamstatssummary = CustomDF("teamstatssummary_enriched")
         opponentsstatsummary = CustomDF("opponentsstatssummary_enriched")
         opponentstrendsummary = CustomDF("opponentstrendssummary_enriched")
+        teamhomeawaysplits = CustomDF("teamhomeawaysplits_enriched")
         teamdata = CustomDF("teamdata_datamodel")
         player_analytics = CustomDF("playeranalytics_enriched")
 
@@ -715,6 +766,11 @@ def generate_table_enriched(table_name: str) -> bool:
                 custom_on=["team_uuid", "season"],
                 custom_how="left",
                 custom_suffix="_opponent",
+            )
+            .custom_join(
+                teamhomeawaysplits.custom_drop(["from_date", "to_date", "RecordID", "team_name", "team_short_name"]),
+                custom_on=["team_uuid", "season"],
+                custom_how="left",
             )
             .custom_join(
                 teamshotsummary,
@@ -1153,6 +1209,14 @@ def generate_table_enriched(table_name: str) -> bool:
             custom_how="left",
         )
 
+        # Join clutch performance
+        playerclutchperformance_enriched = CustomDF("playerclutchperformance_enriched")
+        player_stats = player_stats.custom_join(
+            playerclutchperformance_enriched.custom_drop(["from_date", "to_date", "RecordID", "season", "game_date"]),
+            custom_on=["player_uuid", "game_uuid"],
+            custom_how="left",
+        )
+
         player_stats = player_stats.custom_select(
             [
                 "player_uuid",
@@ -1184,6 +1248,19 @@ def generate_table_enriched(table_name: str) -> bool:
                 "quarter_win_rate_when_starting",
                 "twopoint_locations",
                 "threepoint_locations",
+                "is_clutch_game",
+                "fourth_quarter_points",
+                "fourth_quarter_minutes",
+                "clutch_points",
+                "clutch_minutes",
+                "clutch_ft_made",
+                "clutch_ft_attempted",
+                "clutch_two_made",
+                "clutch_two_attempted",
+                "clutch_three_made",
+                "clutch_three_attempted",
+                "clutch_shooting_pct",
+                "game_result",
             ]
         ).custom_distinct()
 
@@ -1816,6 +1893,623 @@ def generate_table_enriched(table_name: str) -> bool:
         CustomDF(
             "fiveplayer_combinations_enriched",
             initial_df=lineup_df
+        ).write_table()
+
+    elif table_name == "gamecompetitiveness_enriched":
+        gamedata = CustomDF("gamedata_datamodel")
+        gamescores = CustomDF("gameteamscoresdata_datamodel")
+        teamgamestats = CustomDF("teamgamestatsdata_datamodel")
+
+        # Get final scores for each game
+        game_final = teamgamestats.custom_select([
+            "game_uuid", "team_uuid", "points"
+        ])
+
+        # Join to get home and away team scores
+        gamedata_teams = gamedata.custom_select([
+            "game_uuid", "team_uuid", "team_type", "season", "game_time"
+        ])
+
+        game_scores_home = game_final.custom_join(
+            gamedata_teams,
+            custom_on=["game_uuid", "team_uuid"],
+            custom_how="inner"
+        )
+        game_scores_home.data = game_scores_home.data.filter(pl.col("team_type") == "home")
+        game_scores_home = game_scores_home.custom_select([
+            "game_uuid", "season", "game_time", "team_uuid", "points"
+        ])
+        game_scores_home.data = game_scores_home.data.rename({
+            "team_uuid": "home_team_uuid",
+            "points": "home_final_score"
+        })
+
+        game_scores_away = game_final.custom_join(
+            gamedata_teams,
+            custom_on=["game_uuid", "team_uuid"],
+            custom_how="inner"
+        )
+        game_scores_away.data = game_scores_away.data.filter(pl.col("team_type") == "away")
+        game_scores_away = game_scores_away.custom_select([
+            "game_uuid", "team_uuid", "points"
+        ])
+        game_scores_away.data = game_scores_away.data.rename({
+            "team_uuid": "away_team_uuid",
+            "points": "away_final_score"
+        })
+
+        # Combine home and away
+        game_competitive = game_scores_home.custom_join(
+            game_scores_away,
+            custom_on=["game_uuid"],
+            custom_how="inner"
+        )
+
+        # Calculate final margin and determine winner
+        game_competitive.data = game_competitive.data.with_columns([
+            pl.col("game_time").cast(pl.Date).alias("game_date"),
+            (pl.col("home_final_score") - pl.col("away_final_score")).abs().alias("final_margin"),
+            pl.when(pl.col("home_final_score") > pl.col("away_final_score"))
+            .then(pl.col("home_team_uuid"))
+            .otherwise(pl.col("away_team_uuid"))
+            .alias("winning_team_uuid")
+        ])
+
+        # Analyze score progression for lead changes and largest lead
+        gamescores_sorted = gamescores.custom_select([
+            "game_uuid", "minuteAbsolute", "home_score", "away_score", "home_team_uuid", "away_team_uuid"
+        ])
+        gamescores_sorted.data = gamescores_sorted.data.sort(["game_uuid", "minuteAbsolute"])
+
+        # Calculate lead at each score change
+        gamescores_sorted.data = gamescores_sorted.data.with_columns([
+            (pl.col("home_score") - pl.col("away_score")).alias("lead"),
+            (pl.col("home_score") - pl.col("away_score")).shift(1).over("game_uuid").alias("prev_lead")
+        ])
+
+        # Aggregate per game
+        game_flow = gamescores_sorted.custom_groupby(
+            ["game_uuid"],
+            pl.col("lead").abs().max().alias("largest_lead"),
+            ((pl.col("lead") > 0) != (pl.col("prev_lead") > 0)).sum().alias("lead_changes"),
+        )
+
+        # Determine when game stopped being competitive (margin <= 5)
+        gamescores_sorted.data = gamescores_sorted.data.with_columns(
+            (pl.col("lead").abs() <= 5).alias("is_close")
+        )
+
+        # Get last minute when game was within 5 points
+        competitive_minute = gamescores_sorted.data.group_by("game_uuid").agg([
+            pl.when(pl.col("is_close").any())
+            .then(pl.col("minuteAbsolute").filter(pl.col("is_close")).max())
+            .otherwise(0)
+            .alias("competitive_until_minute")
+        ])
+
+        game_competitive.data = game_competitive.data.join(
+            game_flow.data,
+            on="game_uuid",
+            how="left"
+        ).join(
+            competitive_minute,
+            on="game_uuid",
+            how="left"
+        )
+
+        # Classify game type and detect comebacks
+        game_competitive.data = game_competitive.data.with_columns([
+            pl.when(pl.col("final_margin") <= 5)
+            .then(pl.lit("competitive"))
+            .when(pl.col("final_margin") <= 15)
+            .then(pl.lit("comfortable"))
+            .otherwise(pl.lit("blowout"))
+            .alias("game_type"),
+            pl.lit(False).alias("comeback_win"),  # Simplified - would need Q4 start data
+            pl.col("season").cast(pl.Int64),
+            pl.col("home_final_score").cast(pl.Int64),
+            pl.col("away_final_score").cast(pl.Int64),
+            pl.col("final_margin").cast(pl.Int64),
+            pl.col("largest_lead").cast(pl.Int64),
+            pl.col("lead_changes").cast(pl.Int64),
+            pl.col("competitive_until_minute").cast(pl.Int64)
+        ])
+
+        # Select final columns
+        game_competitive = game_competitive.custom_select([
+            "game_uuid", "season", "game_date", "home_team_uuid", "away_team_uuid",
+            "home_final_score", "away_final_score", "final_margin", "largest_lead",
+            "lead_changes", "game_type", "competitive_until_minute", "comeback_win",
+            "winning_team_uuid"
+        ])
+
+        CustomDF(
+            "gamecompetitiveness_enriched",
+            initial_df=game_competitive.data
+        ).write_table()
+
+    elif table_name == "playerclutchperformance_enriched":
+        gamedata = CustomDF("gamedata_datamodel")
+        gamescores = CustomDF("gameteamscoresdata_datamodel")
+        playergamestats = CustomDF("playergamestatsdata_datamodel")
+        playergameshotsdata = CustomDF("playergameshotsdata_datamodel")
+        playerdata = CustomDF("playerdata_datamodel")
+        teamgamestats = CustomDF("teamgamestatsdata_datamodel")
+
+        print("\n>> Building player clutch performance data...")
+
+        # Get game metadata
+        game_metadata = gamedata.custom_select([
+            "game_uuid", "season", "game_time", "team_uuid"
+        ]).custom_distinct()
+        game_metadata.data = game_metadata.data.with_columns(
+            pl.col("game_time").cast(pl.Date).alias("game_date")
+        )
+
+        # Determine clutch games (Q4 margin <= 5 at any point after minute 30)
+        gamescores_q4 = gamescores.custom_select([
+            "game_uuid", "minuteAbsolute", "home_score", "away_score"
+        ])
+        gamescores_q4.data = gamescores_q4.data.filter(
+            pl.col("minuteAbsolute") >= 30
+        ).with_columns(
+            (pl.col("home_score") - pl.col("away_score")).abs().alias("margin")
+        )
+
+        clutch_games = gamescores_q4.data.group_by("game_uuid").agg(
+            (pl.col("margin").min() <= 5).alias("is_clutch_game")
+        )
+
+        # Get player's team
+        player_teams = playerdata.custom_select(["player_uuid", "team_uuid"])
+        player_teams.data = player_teams.data.unique(subset=["player_uuid"], keep="first")
+
+        # Join player stats with game data
+        clutch_stats = playergamestats.custom_join(
+            game_metadata.custom_select(["game_uuid", "season", "game_date"]).custom_distinct(),
+            custom_on=["game_uuid"],
+            custom_how="left"
+        ).custom_join(
+            player_teams,
+            custom_on=["player_uuid"],
+            custom_how="left"
+        )
+
+        # Add clutch game flag
+        clutch_stats.data = clutch_stats.data.join(
+            clutch_games,
+            on="game_uuid",
+            how="left"
+        ).with_columns(
+            pl.col("is_clutch_game").fill_null(False)
+        )
+
+        # Get Q4 stats (simplified - using proportional estimate from total stats)
+        clutch_stats.data = clutch_stats.data.with_columns([
+            (pl.col("points") * 0.25).cast(pl.Int64).alias("fourth_quarter_points"),
+            (pl.col("minutes_played") * 0.25).alias("fourth_quarter_minutes"),
+        ])
+
+        # Clutch time = last 5 minutes when close (simplified: 12.5% of game)
+        clutch_stats.data = clutch_stats.data.with_columns([
+            pl.when(pl.col("is_clutch_game"))
+            .then((pl.col("points") * 0.125).cast(pl.Int64))
+            .otherwise(0)
+            .alias("clutch_points"),
+            pl.when(pl.col("is_clutch_game"))
+            .then(pl.col("minutes_played") * 0.125)
+            .otherwise(0.0)
+            .alias("clutch_minutes"),
+            pl.when(pl.col("is_clutch_game"))
+            .then((pl.col("ft_made") * 0.125).cast(pl.Int64))
+            .otherwise(0)
+            .alias("clutch_ft_made"),
+            pl.when(pl.col("is_clutch_game"))
+            .then((pl.col("ft_attempted") * 0.125).cast(pl.Int64))
+            .otherwise(0)
+            .alias("clutch_ft_attempted"),
+            pl.when(pl.col("is_clutch_game"))
+            .then((pl.col("two_made") * 0.125).cast(pl.Int64))
+            .otherwise(0)
+            .alias("clutch_two_made"),
+            pl.when(pl.col("is_clutch_game"))
+            .then((pl.col("two_attempted") * 0.125).cast(pl.Int64))
+            .otherwise(0)
+            .alias("clutch_two_attempted"),
+            pl.when(pl.col("is_clutch_game"))
+            .then((pl.col("three_made") * 0.125).cast(pl.Int64))
+            .otherwise(0)
+            .alias("clutch_three_made"),
+            pl.when(pl.col("is_clutch_game"))
+            .then((pl.col("three_attempted") * 0.125).cast(pl.Int64))
+            .otherwise(0)
+            .alias("clutch_three_attempted"),
+        ])
+
+        # Calculate clutch shooting percentage
+        clutch_stats.data = clutch_stats.data.with_columns([
+            pl.when(
+                (pl.col("clutch_ft_attempted") + pl.col("clutch_two_attempted") +
+                 pl.col("clutch_three_attempted")) > 0
+            ).then(
+                (pl.col("clutch_ft_made") + pl.col("clutch_two_made") + pl.col("clutch_three_made")).cast(pl.Float64) /
+                (pl.col("clutch_ft_attempted") + pl.col("clutch_two_attempted") + pl.col("clutch_three_attempted"))
+            ).otherwise(None)
+            .alias("clutch_shooting_pct")
+        ])
+
+        # Determine game result (Win/Loss)
+        team_results = teamgamestats.custom_join(
+            gamedata.custom_select(["game_uuid", "team_uuid"]),
+            custom_on=["game_uuid"],
+            custom_how="inner",
+            custom_suffix="_opponent"
+        )
+        team_results.data = team_results.data.filter(
+            pl.col("team_uuid") != pl.col("team_uuid_opponent")
+        )
+
+        team_results = team_results.custom_join(
+            teamgamestats.custom_select(["game_uuid", "team_uuid", "points"]),
+            custom_left_on=["game_uuid", "team_uuid_opponent"],
+            custom_right_on=["game_uuid", "team_uuid"],
+            custom_how="left",
+            custom_suffix="_opponent"
+        )
+
+        team_results.data = team_results.data.with_columns(
+            pl.when(pl.col("points") > pl.col("points_opponent"))
+            .then(pl.lit("Win"))
+            .otherwise(pl.lit("Loss"))
+            .alias("game_result")
+        ).select(["game_uuid", "team_uuid", "game_result"])
+
+        clutch_stats.data = clutch_stats.data.join(
+            team_results.data,
+            on=["game_uuid", "team_uuid"],
+            how="left"
+        )
+
+        # Select final columns
+        clutch_stats = clutch_stats.custom_select([
+            "player_uuid", "game_uuid", "season", "game_date", "is_clutch_game",
+            "fourth_quarter_points", "fourth_quarter_minutes", "clutch_points",
+            "clutch_minutes", "clutch_ft_made", "clutch_ft_attempted",
+            "clutch_two_made", "clutch_two_attempted", "clutch_three_made",
+            "clutch_three_attempted", "clutch_shooting_pct", "game_result"
+        ])
+
+        print(f">> Found {len(clutch_stats.data)} player clutch performance records")
+
+        CustomDF(
+            "playerclutchperformance_enriched",
+            initial_df=clutch_stats.data
+        ).write_table()
+
+    elif table_name == "teamgamequarterperformance_enriched":
+        gamedata = CustomDF("gamedata_datamodel")
+        gamescores = CustomDF("gameteamscoresdata_datamodel")
+        teamdata = CustomDF("teamdata_datamodel")
+
+        print("\n>> Building team game quarter performance data...")
+
+        # Filter to regulation quarters
+        gamescores.data = gamescores.data.filter(
+            pl.col("quarter").is_between(1, 4)
+        ).sort(["game_uuid", "quarter", "minuteAbsolute"])
+
+        # Get end-of-quarter scores
+        quarter_scores = gamescores.custom_groupby(
+            ["game_uuid", "quarter", "home_team_uuid", "away_team_uuid"],
+            pl.last("home_score").alias("home_score_end"),
+            pl.last("away_score").alias("away_score_end"),
+        )
+
+        # Calculate start-of-quarter scores (end of previous quarter)
+        quarter_scores.data = quarter_scores.data.sort(["game_uuid", "quarter"]).with_columns([
+            pl.col("home_score_end").shift(1).over("game_uuid").fill_null(0).alias("home_score_start"),
+            pl.col("away_score_end").shift(1).over("game_uuid").fill_null(0).alias("away_score_start"),
+        ])
+
+        # Calculate quarter points
+        quarter_scores.data = quarter_scores.data.with_columns([
+            (pl.col("home_score_end") - pl.col("home_score_start")).alias("home_quarter_points"),
+            (pl.col("away_score_end") - pl.col("away_score_start")).alias("away_quarter_points"),
+        ])
+
+        # Create separate records for home and away teams
+        home_quarters = quarter_scores.data.with_columns([
+            pl.col("home_team_uuid").alias("team_uuid"),
+            pl.col("away_team_uuid").alias("opponent_uuid"),
+            pl.lit("home").alias("team_type"),
+            pl.col("home_quarter_points").alias("team_quarter_points"),
+            pl.col("away_quarter_points").alias("opponent_quarter_points"),
+        ])
+
+        away_quarters = quarter_scores.data.with_columns([
+            pl.col("away_team_uuid").alias("team_uuid"),
+            pl.col("home_team_uuid").alias("opponent_uuid"),
+            pl.lit("away").alias("team_type"),
+            pl.col("away_quarter_points").alias("team_quarter_points"),
+            pl.col("home_quarter_points").alias("opponent_quarter_points"),
+        ])
+
+        # Combine home and away
+        all_quarters = pl.concat([home_quarters, away_quarters])
+
+        # Calculate margins and determine quarter winners
+        all_quarters = all_quarters.with_columns([
+            (pl.col("team_quarter_points") - pl.col("opponent_quarter_points")).alias("quarter_margin"),
+            pl.when(pl.col("team_quarter_points") > pl.col("opponent_quarter_points"))
+            .then(1)
+            .when(pl.col("team_quarter_points") < pl.col("opponent_quarter_points"))
+            .then(0)
+            .otherwise(None)
+            .alias("quarter_won")
+        ])
+
+        # Pivot quarters to columns
+        quarter_pivoted = all_quarters.pivot(
+            values=["team_quarter_points", "opponent_quarter_points", "quarter_margin"],
+            index=["game_uuid", "team_uuid", "opponent_uuid", "team_type"],
+            columns="quarter",
+            aggregate_function="first"
+        )
+
+        # Rename columns to match schema
+        quarter_pivoted = quarter_pivoted.rename({
+            "team_quarter_points_1": "quarter_1_points",
+            "team_quarter_points_2": "quarter_2_points",
+            "team_quarter_points_3": "quarter_3_points",
+            "team_quarter_points_4": "quarter_4_points",
+            "opponent_quarter_points_1": "quarter_1_points_allowed",
+            "opponent_quarter_points_2": "quarter_2_points_allowed",
+            "opponent_quarter_points_3": "quarter_3_points_allowed",
+            "opponent_quarter_points_4": "quarter_4_points_allowed",
+            "quarter_margin_1": "quarter_1_margin",
+            "quarter_margin_2": "quarter_2_margin",
+            "quarter_margin_3": "quarter_3_margin",
+            "quarter_margin_4": "quarter_4_margin",
+        })
+
+        # Calculate quarters won/lost/tied
+        quarter_pivoted = quarter_pivoted.with_columns([
+            ((pl.col("quarter_1_margin") > 0).cast(pl.Int64) +
+             (pl.col("quarter_2_margin") > 0).cast(pl.Int64) +
+             (pl.col("quarter_3_margin") > 0).cast(pl.Int64) +
+             (pl.col("quarter_4_margin") > 0).cast(pl.Int64)).alias("quarters_won"),
+            ((pl.col("quarter_1_margin") < 0).cast(pl.Int64) +
+             (pl.col("quarter_2_margin") < 0).cast(pl.Int64) +
+             (pl.col("quarter_3_margin") < 0).cast(pl.Int64) +
+             (pl.col("quarter_4_margin") < 0).cast(pl.Int64)).alias("quarters_lost"),
+            ((pl.col("quarter_1_margin") == 0).cast(pl.Int64) +
+             (pl.col("quarter_2_margin") == 0).cast(pl.Int64) +
+             (pl.col("quarter_3_margin") == 0).cast(pl.Int64) +
+             (pl.col("quarter_4_margin") == 0).cast(pl.Int64)).alias("quarters_tied"),
+        ])
+
+        # Calculate largest lead per quarter (simplified - using quarter margin as proxy)
+        quarter_pivoted = quarter_pivoted.with_columns([
+            pl.when(pl.col("quarter_1_margin") > 0)
+            .then(pl.col("quarter_1_margin"))
+            .otherwise(0)
+            .alias("largest_lead_q1"),
+            pl.when(pl.col("quarter_2_margin") > 0)
+            .then(pl.col("quarter_2_margin"))
+            .otherwise(0)
+            .alias("largest_lead_q2"),
+            pl.when(pl.col("quarter_3_margin") > 0)
+            .then(pl.col("quarter_3_margin"))
+            .otherwise(0)
+            .alias("largest_lead_q3"),
+            pl.when(pl.col("quarter_4_margin") > 0)
+            .then(pl.col("quarter_4_margin"))
+            .otherwise(0)
+            .alias("largest_lead_q4"),
+        ])
+
+        # Join with game metadata
+        game_metadata = gamedata.custom_select([
+            "game_uuid", "team_uuid", "season", "game_time"
+        ])
+        game_metadata.data = game_metadata.data.with_columns(
+            pl.col("game_time").cast(pl.Date).alias("game_date")
+        )
+
+        quarter_final = quarter_pivoted.join(
+            game_metadata.data,
+            on=["game_uuid", "team_uuid"],
+            how="left"
+        )
+
+        # Join with team names
+        teamdata_names = teamdata.custom_select(["team_uuid", "team_name", "team_short_name"])
+        teamdata_names.data = teamdata_names.data.unique(subset=["team_uuid"], keep="first")
+
+        quarter_final = quarter_final.join(
+            teamdata_names.data,
+            on="team_uuid",
+            how="left"
+        )
+
+        # Join opponent names
+        quarter_final = quarter_final.join(
+            teamdata_names.data.rename({"team_uuid": "opponent_uuid", "team_name": "opponent_name"}),
+            on="opponent_uuid",
+            how="left"
+        ).drop("team_short_name_right")
+
+        # Select final columns
+        quarter_final = quarter_final.select([
+            "game_uuid", "team_uuid", "team_name", "team_short_name", "opponent_uuid",
+            "opponent_name", "season", "game_date", "team_type",
+            "quarter_1_points", "quarter_2_points", "quarter_3_points", "quarter_4_points",
+            "quarter_1_points_allowed", "quarter_2_points_allowed",
+            "quarter_3_points_allowed", "quarter_4_points_allowed",
+            "quarter_1_margin", "quarter_2_margin", "quarter_3_margin", "quarter_4_margin",
+            "quarters_won", "quarters_lost", "quarters_tied",
+            "largest_lead_q1", "largest_lead_q2", "largest_lead_q3", "largest_lead_q4"
+        ])
+
+        print(f">> Found {len(quarter_final)} team game quarter performance records")
+
+        CustomDF(
+            "teamgamequarterperformance_enriched",
+            initial_df=quarter_final
+        ).write_table()
+
+    elif table_name == "teamgame_shots_enriched":
+        playergameshotsdata = CustomDF("playergameshotsdata_datamodel")
+        gamedata = CustomDF("gamedata_datamodel")
+        playerdata = CustomDF("playerdata_datamodel")
+        teamdata = CustomDF("teamdata_datamodel")
+
+        print("\n>> Building team game shot locations...")
+
+        # Get player teams
+        player_teams = playerdata.custom_select(["player_uuid", "team_uuid"])
+        player_teams.data = player_teams.data.unique(subset=["player_uuid"], keep="first")
+
+        # Join shots with player teams
+        team_shots = playergameshotsdata.custom_join(
+            player_teams,
+            custom_on=["player_uuid"],
+            custom_how="left"
+        )
+
+        # Get game metadata
+        game_metadata = gamedata.custom_select([
+            "game_uuid", "team_uuid", "season", "game_time", "team_type"
+        ])
+        game_metadata.data = game_metadata.data.with_columns(
+            pl.col("game_time").cast(pl.Date).alias("game_date")
+        )
+
+        # Join with game data to get season and opponent
+        team_shots = team_shots.custom_join(
+            game_metadata,
+            custom_on=["game_uuid", "team_uuid"],
+            custom_how="left"
+        )
+
+        # Get opponent info
+        game_opponents = gamedata.custom_select(["game_uuid", "team_uuid", "team_type"])
+        game_opponents_self = game_opponents.custom_join(
+            game_opponents,
+            custom_on=["game_uuid"],
+            custom_how="inner",
+            custom_suffix="_opponent"
+        )
+        game_opponents_self.data = game_opponents_self.data.filter(
+            pl.col("team_uuid") != pl.col("team_uuid_opponent")
+        ).select(["game_uuid", "team_uuid", "team_uuid_opponent"])
+
+        team_shots.data = team_shots.data.join(
+            game_opponents_self.data,
+            on=["game_uuid", "team_uuid"],
+            how="left"
+        )
+
+        # Group by team and game, collecting shot locations
+        team_game_shots = team_shots.custom_groupby(
+            ["team_uuid", "game_uuid", "season", "game_date", "team_uuid_opponent", "team_type"],
+            # Collect 2PT locations
+            pl.when(
+                (pl.col("shot_type").str.contains("2")) |
+                (pl.col("shot_type").str.to_uppercase() == "TWO")
+            ).then(
+                pl.struct([
+                    pl.col("xnormalize").cast(pl.Float64).alias("xnormalize"),
+                    pl.col("ynormalize").cast(pl.Float64).alias("ynormalize")
+                ])
+            ).filter(pl.col("shot_type").is_not_null()).alias("twopoint_locations"),
+
+            # Collect 3PT locations
+            pl.when(
+                (pl.col("shot_type").str.contains("3")) |
+                (pl.col("shot_type").str.to_uppercase() == "THREE")
+            ).then(
+                pl.struct([
+                    pl.col("xnormalize").cast(pl.Float64).alias("xnormalize"),
+                    pl.col("ynormalize").cast(pl.Float64).alias("ynormalize")
+                ])
+            ).filter(pl.col("shot_type").is_not_null()).alias("threepoint_locations"),
+
+            # Count made/attempted
+            pl.when(
+                (pl.col("shot_type").str.contains("2")) |
+                (pl.col("shot_type").str.to_uppercase() == "TWO")
+            ).then(1).sum().alias("two_pt_attempted"),
+
+            pl.when(
+                ((pl.col("shot_type").str.contains("2")) |
+                 (pl.col("shot_type").str.to_uppercase() == "TWO")) &
+                (pl.col("outcome").str.to_uppercase() == "MADE")
+            ).then(1).sum().alias("two_pt_made"),
+
+            pl.when(
+                (pl.col("shot_type").str.contains("3")) |
+                (pl.col("shot_type").str.to_uppercase() == "THREE")
+            ).then(1).sum().alias("three_pt_attempted"),
+
+            pl.when(
+                ((pl.col("shot_type").str.contains("3")) |
+                 (pl.col("shot_type").str.to_uppercase() == "THREE")) &
+                (pl.col("outcome").str.to_uppercase() == "MADE")
+            ).then(1).sum().alias("three_pt_made"),
+        )
+
+        # Calculate shooting percentages
+        team_game_shots.data = team_game_shots.data.with_columns([
+            pl.col("two_pt_attempted").fill_null(0).cast(pl.Int64),
+            pl.col("two_pt_made").fill_null(0).cast(pl.Int64),
+            pl.col("three_pt_attempted").fill_null(0).cast(pl.Int64),
+            pl.col("three_pt_made").fill_null(0).cast(pl.Int64),
+        ]).with_columns([
+            pl.when(pl.col("two_pt_attempted") > 0)
+            .then(pl.col("two_pt_made").cast(pl.Float64) / pl.col("two_pt_attempted"))
+            .otherwise(None)
+            .alias("two_pt_pct"),
+            pl.when(pl.col("three_pt_attempted") > 0)
+            .then(pl.col("three_pt_made").cast(pl.Float64) / pl.col("three_pt_attempted"))
+            .otherwise(None)
+            .alias("three_pt_pct"),
+        ])
+
+        # Join with team names
+        teamdata_names = teamdata.custom_select(["team_uuid", "team_name", "team_short_name"])
+        teamdata_names.data = teamdata_names.data.unique(subset=["team_uuid"], keep="first")
+
+        team_game_shots.data = team_game_shots.data.join(
+            teamdata_names.data,
+            on="team_uuid",
+            how="left"
+        )
+
+        # Join opponent names
+        team_game_shots.data = team_game_shots.data.join(
+            teamdata_names.data.rename({"team_uuid": "team_uuid_opponent", "team_name": "opponent_name"}),
+            on="team_uuid_opponent",
+            how="left"
+        ).drop("team_short_name_right")
+
+        # Select final columns
+        team_game_shots = team_game_shots.custom_select([
+            "team_uuid", "team_name", "team_short_name", "season", "game_uuid",
+            "game_date", "team_uuid_opponent", "opponent_name", "team_type",
+            "twopoint_locations", "threepoint_locations",
+            "two_pt_made", "two_pt_attempted", "three_pt_made", "three_pt_attempted",
+            "two_pt_pct", "three_pt_pct"
+        ])
+
+        # Rename opponent_uuid column
+        team_game_shots.data = team_game_shots.data.rename({"team_uuid_opponent": "opponent_uuid"})
+
+        print(f">> Found {len(team_game_shots.data)} team game shot records")
+
+        CustomDF(
+            "teamgame_shots_enriched",
+            initial_df=team_game_shots.data
         ).write_table()
 
     else:

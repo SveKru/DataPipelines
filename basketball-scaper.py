@@ -63,60 +63,31 @@ elif os.getenv("GRECAPTCHA_TOKEN"):
 # generate_table_datamodel('playergamesubstitionsgamedata_datamodel')
 # generate_table_datamodel('teamdata_datamodel')
 
-# ============================================================================
-# GAME-LEVEL PLAYER STATS (Foundational tables)
-# ============================================================================
-# NOTE: These must run in order as playergameanalytics_enriched depends on
-# the other per-game tables being available first.
-
-# Per-game plus/minus (required by playergameanalytics)
+# LAYER 1: Atomic per-game tables
+generate_table_enriched('gamecompetitiveness_enriched')
 generate_table_enriched('playergameplusminus_enriched')
-
-# Per-game impact metrics (required by playergameanalytics)
 generate_table_enriched('playergameimpact_enriched')
-
-# Per-game quarter stats (required by playergameanalytics)
 generate_table_enriched('playergamequarterstats_enriched')
-
-# Per-game shot locations (NEW - required by playergameanalytics)
 generate_table_enriched('playergame_shots_enriched')
+generate_table_enriched('playerclutchperformance_enriched')
+generate_table_enriched('teamgameanalytics_enriched')
+generate_table_enriched('teamgamequarterperformance_enriched')
+generate_table_enriched('teamgame_shots_enriched')
+generate_table_enriched('fiveplayer_combinations_enriched')
+generate_table_enriched('threeplayer_combinations_enriched')
 
-# Wide analytics table with ALL per-game stats (joins all above tables)
+# LAYER 2: Wide per-game tables
 generate_table_enriched('playergameanalytics_enriched')
 
-# ============================================================================
-# AGGREGATED PLAYER STATS (Derived from per-game data)
-# ============================================================================
-
-# Season aggregations
+# LAYER 3: Aggregated tables
 generate_table_enriched('playerstatssummary_enriched')
 generate_table_enriched('player2ptsummary_enriched')
 generate_table_enriched('player3ptsummary_enriched')
-generate_table_enriched('playeranalytics_enriched')
-
-# Career aggregations
 generate_table_enriched('playerplusminus_enriched')
-
-# ============================================================================
-# TEAM-LEVEL STATS
-# ============================================================================
-
+generate_table_enriched('playeranalytics_enriched')
 generate_table_enriched('teamstatssummary_enriched')
 generate_table_enriched('opponentsstatssummary_enriched')
 generate_table_enriched('opponentstrendssummary_enriched')
-generate_table_enriched('teamanalytics_enriched')
-generate_table_enriched('teamgameanalytics_enriched')
 generate_table_enriched('teamhomeawaysplits_enriched')
 generate_table_enriched('teamquarterperformance_enriched')
-
-# ============================================================================
-# LINEUP COMBINATIONS (Per-game data)
-# ============================================================================
-
-# 5-player lineup combinations per game
-generate_table_enriched('fiveplayer_combinations_enriched')
-
-# 3-player combinations per game
-generate_table_enriched('threeplayer_combinations_enriched')
-
-# Export the edges of the datasets
+generate_table_enriched('teamanalytics_enriched')
