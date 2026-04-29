@@ -208,8 +208,12 @@ def generate_table_enriched(table_name: str) -> bool:
         playergameshotsdata_df = CustomDF("playergameshotsdata_datamodel")
         game_data = CustomDF("gamedata_datamodel")
 
+        # Deduplicate game_data to avoid cartesian product (each game has 2 rows: home/away)
+        game_data.data = game_data.data.unique(subset=["game_uuid"], keep="first")
+        game_season = game_data.custom_select(["game_uuid", "season"])
+
         playergameshotsdata_df = playergameshotsdata_df.custom_join(
-            game_data.custom_select(["game_uuid", "season"]),
+            game_season,
             custom_on=["game_uuid"],
             custom_how="left",
         )
@@ -236,8 +240,12 @@ def generate_table_enriched(table_name: str) -> bool:
         playergameshotsdata_df = CustomDF("playergameshotsdata_datamodel")
         game_data = CustomDF("gamedata_datamodel")
 
+        # Deduplicate game_data to avoid cartesian product (each game has 2 rows: home/away)
+        game_data.data = game_data.data.unique(subset=["game_uuid"], keep="first")
+        game_season = game_data.custom_select(["game_uuid", "season"])
+
         playergameshotsdata_df = playergameshotsdata_df.custom_join(
-            game_data.custom_select(["game_uuid", "season"]),
+            game_season,
             custom_on=["game_uuid"],
             custom_how="left",
         )
@@ -815,6 +823,134 @@ def generate_table_enriched(table_name: str) -> bool:
         )
         teamgameanalytics_enriched.write_table()
 
+    elif table_name == "playergamequarterstats_enriched":
+        raw_game_data = CustomDF("playergamedata_raw")
+        gameteamscores = CustomDF("gameteamscoresdata_datamodel")
+        substitutions_q = CustomDF("playergamesubstitionsgamedata_datamodel")
+        player_data = CustomDF("playerdata_datamodel")
+
+        raw_game_data.data = (
+            raw_game_data.data
+            .select([
+                pl.col("playerUuid").alias("player_uuid"),
+                pl.col("idMatchIntern").alias("game_uuid"),
+                pl.col("starting"),
+            ])
+            .filter(pl.col("player_uuid").is_not_null())
+        )
+
+        # Last cumulative score per (game_uuid, quarter) for regulation quarters
+        quarter_scores = (
+            gameteamscores.data
+            .filter(pl.col("quarter").is_between(1, 4))
+            .sort(["game_uuid", "quarter", "minuteAbsolute"])
+            .group_by(["game_uuid", "quarter", "home_team_uuid", "away_team_uuid"], maintain_order=True)
+            .agg(
+                pl.last("home_score").alias("home_score_end"),
+                pl.last("away_score").alias("away_score_end"),
+            )
+            .sort(["game_uuid", "quarter"])
+            .with_columns([
+                pl.col("home_score_end").shift(1).over("game_uuid").fill_null(0).alias("home_score_start"),
+                pl.col("away_score_end").shift(1).over("game_uuid").fill_null(0).alias("away_score_start"),
+            ])
+            .with_columns(
+                (pl.col("home_score_end") - pl.col("home_score_start") >
+                 pl.col("away_score_end") - pl.col("away_score_start")).alias("home_won_quarter")
+            )
+            .select(["game_uuid", "quarter", "home_team_uuid", "home_won_quarter"])
+        )
+
+        subs_data = substitutions_q.data.select(["game_uuid", "player_uuid", "type", "minute_absolute"])
+
+        # Q1: use the game-level starting flag from raw data
+        q1_starts = raw_game_data.data.select([
+            pl.lit(1).cast(pl.Int64).alias("quarter"),
+            pl.col("game_uuid"),
+            pl.col("player_uuid"),
+            pl.col("starting").alias("starts_quarter"),
+        ])
+
+        quarter_starts_frames = [q1_starts]
+
+        # Q2-Q4: last sub-event at or before each quarter's start boundary determines on-court status;
+        # players with no events before the boundary inherit the game-level starting flag.
+        for q, boundary in [(2, 10), (3, 20), (4, 30)]:
+            last_sub_type = (
+                subs_data
+                .filter(pl.col("minute_absolute") <= boundary)
+                .sort("minute_absolute")
+                .group_by(["game_uuid", "player_uuid"], maintain_order=True)
+                .agg(pl.last("type").alias("last_sub_type"))
+            )
+            qn_starts = (
+                raw_game_data.data
+                .join(last_sub_type, on=["game_uuid", "player_uuid"], how="left")
+                .with_columns(
+                    pl.when(pl.col("last_sub_type").is_not_null())
+                    .then(pl.col("last_sub_type") == "IN_TYPE")
+                    .otherwise(pl.col("starting"))
+                    .alias("starts_quarter")
+                )
+                .select([
+                    pl.lit(q).cast(pl.Int64).alias("quarter"),
+                    pl.col("game_uuid"),
+                    pl.col("player_uuid"),
+                    pl.col("starts_quarter"),
+                ])
+            )
+            quarter_starts_frames.append(qn_starts)
+
+        # Keep only rows where the player starts the quarter
+        player_quarter_starts = (
+            pl.concat(quarter_starts_frames)
+            .filter(pl.col("starts_quarter") == True)
+        )
+
+        # Resolve team_uuid for each player
+        player_teams_q = (
+            player_data.data
+            .unique(subset=["player_uuid"], keep="first")
+            .select(["player_uuid", "team_uuid"])
+        )
+        player_quarter_starts = player_quarter_starts.join(
+            player_teams_q, on="player_uuid", how="left"
+        )
+
+        # Determine whether each quarter was won by the starting player's team
+        player_quarter_starts = (
+            player_quarter_starts
+            .join(quarter_scores, on=["game_uuid", "quarter"], how="left")
+            .with_columns(
+                pl.when(pl.col("team_uuid") == pl.col("home_team_uuid"))
+                .then(pl.col("home_won_quarter"))
+                .otherwise(~pl.col("home_won_quarter"))
+                .alias("won_quarter")
+            )
+        )
+
+        # Aggregate per (game_uuid, player_uuid)
+        player_quarter_agg = (
+            player_quarter_starts
+            .group_by(["game_uuid", "player_uuid"])
+            .agg([
+                pl.len().alias("quarters_started"),
+                pl.col("won_quarter").sum().cast(pl.Int64).alias("quarters_won_when_starting"),
+            ])
+            .with_columns(
+                pl.when(pl.col("quarters_started") > 0)
+                .then(pl.col("quarters_won_when_starting").cast(pl.Float64) / pl.col("quarters_started"))
+                .otherwise(None)
+                .alias("quarter_win_rate_when_starting")
+            )
+            .with_columns(pl.col("quarters_started").cast(pl.Int64))
+        )
+
+        playergamequarterstats_enriched = CustomDF(
+            "playergamequarterstats_enriched", initial_df=player_quarter_agg
+        )
+        playergamequarterstats_enriched.write_table()
+
     elif table_name == "playergameanalytics_enriched":
         player_stats = CustomDF("playergamestatsdata_datamodel")
         game_data = CustomDF("gamedata_datamodel")
@@ -901,6 +1037,14 @@ def generate_table_enriched(table_name: str) -> bool:
             pl.col("game_time").cast(pl.Date())
         )
 
+        playergamequarterstats_enriched = CustomDF("playergamequarterstats_enriched")
+
+        player_stats = player_stats.custom_join(
+            playergamequarterstats_enriched.custom_drop(["from_date", "to_date", "RecordID"]),
+            custom_on=["player_uuid", "game_uuid"],
+            custom_how="left",
+        )
+
         player_stats = player_stats.custom_select(
             [ 
                 "player_uuid",
@@ -927,6 +1071,9 @@ def generate_table_enriched(table_name: str) -> bool:
                 "defensive_points_on_court",
                 "offensive_points_per_minute",
                 "defensive_points_per_minute",
+                "quarters_started",
+                "quarters_won_when_starting",
+                "quarter_win_rate_when_starting",
             ]
         ).custom_distinct()
 
@@ -934,6 +1081,223 @@ def generate_table_enriched(table_name: str) -> bool:
             "playergameanalytics_enriched", initial_df=player_stats.data
         )
         playergameanalytics_enriched.write_table()
+
+    elif table_name == "teamhomeawaysplits_enriched":
+        gamedata = CustomDF("gamedata_datamodel")
+        teamgamestats = CustomDF("teamgamestatsdata_datamodel")
+        teamdata = CustomDF("teamdata_datamodel")
+
+        # Join game data with team stats
+        game_stats = gamedata.custom_join(
+            teamgamestats,
+            custom_on=["game_uuid", "team_uuid"],
+            custom_how="inner",
+        )
+
+        # Self-join to get opponent stats
+        game_stats_opponent = teamgamestats.custom_select(["game_uuid", "points"])
+        game_stats = game_stats.custom_join(
+            game_stats_opponent,
+            custom_on=["game_uuid"],
+            custom_how="inner",
+            custom_suffix="_opponent",
+        )
+
+        # Filter and calculate metrics in one pass
+        game_stats.data = game_stats.data.filter(
+            pl.col("points") != pl.col("points_opponent")
+        ).with_columns([
+            (pl.col("points") - pl.col("points_opponent")).alias("margin"),
+            (pl.col("points") > pl.col("points_opponent")).cast(pl.Int32).alias("win"),
+            pl.col("game_time").dt.weekday().alias("day_of_week"),
+            pl.col("game_time").dt.hour().alias("hour_of_day"),
+        ])
+
+        # Split by home/away and aggregate
+        home_games = game_stats.custom_select([
+            "team_uuid", "season", "team_type", "points", "points_opponent",
+            "margin", "win", "day_of_week", "hour_of_day"
+        ])
+        home_games.data = home_games.data.filter(pl.col("team_type") == "home")
+
+        away_games = game_stats.custom_select([
+            "team_uuid", "season", "team_type", "points", "points_opponent",
+            "margin", "win"
+        ])
+        away_games.data = away_games.data.filter(pl.col("team_type") == "away")
+
+        # Aggregate home statistics
+        home_agg = home_games.custom_groupby(
+            ["team_uuid", "season"],
+            pl.len().alias("home_games"),
+            pl.mean("points").alias("home_avg_points"),
+            pl.mean("points_opponent").alias("home_avg_points_allowed"),
+            pl.mean("margin").alias("home_avg_margin"),
+            pl.mean("win").alias("home_win_rate"),
+            pl.col("day_of_week").mode().first().alias("typical_home_game_day_num"),
+            pl.col("hour_of_day").mode().first().alias("typical_home_game_hour"),
+        )
+
+        # Aggregate away statistics
+        away_agg = away_games.custom_groupby(
+            ["team_uuid", "season"],
+            pl.len().alias("away_games"),
+            pl.mean("points").alias("away_avg_points"),
+            pl.mean("points_opponent").alias("away_avg_points_allowed"),
+            pl.mean("margin").alias("away_avg_margin"),
+            pl.mean("win").alias("away_win_rate"),
+        )
+
+        # Join home and away stats
+        splits = home_agg.custom_join(
+            away_agg,
+            custom_on=["team_uuid", "season"],
+            custom_how="outer",
+        )
+
+        # Calculate derived metrics and map day names
+        day_mapping = {
+            0: "Monday", 1: "Tuesday", 2: "Wednesday", 3: "Thursday",
+            4: "Friday", 5: "Saturday", 6: "Sunday"
+        }
+        splits.data = splits.data.with_columns([
+            (pl.col("home_avg_points") - pl.col("away_avg_points")).alias("home_away_point_diff"),
+            (pl.col("home_avg_margin") - pl.col("away_avg_margin")).alias("home_court_advantage"),
+            pl.col("typical_home_game_day_num").replace(day_mapping, default=None).alias("typical_home_game_day"),
+            pl.col("typical_home_game_hour").cast(pl.Int64).alias("typical_home_game_hour")
+        ]).drop("typical_home_game_day_num")
+
+        # Join with team names
+        teamdata = teamdata.custom_select(["team_uuid", "team_name", "team_short_name"])
+        teamdata.data = teamdata.data.unique(subset=["team_uuid"], keep="first")
+
+        splits = splits.custom_join(
+            teamdata,
+            custom_on=["team_uuid"],
+            custom_how="left",
+        )
+
+        # Select final columns
+        splits = splits.custom_select([
+            "team_uuid", "team_name", "team_short_name", "season",
+            "home_games", "away_games",
+            "home_avg_points", "away_avg_points",
+            "home_avg_points_allowed", "away_avg_points_allowed",
+            "home_avg_margin", "away_avg_margin",
+            "home_win_rate", "away_win_rate",
+            "home_away_point_diff", "home_court_advantage",
+            "typical_home_game_day", "typical_home_game_hour",
+        ])
+
+        teamhomeawaysplits_enriched = CustomDF(
+            "teamhomeawaysplits_enriched", initial_df=splits.data
+        )
+        teamhomeawaysplits_enriched.write_table()
+
+    elif table_name == "teamquarterperformance_enriched":
+        gamedata = CustomDF("gamedata_datamodel")
+        gamescores = CustomDF("gameteamscoresdata_datamodel")
+        teamdata = CustomDF("teamdata_datamodel")
+
+        # Filter to regulation quarters and sort
+        gamescores.data = gamescores.data.filter(
+            pl.col("quarter").is_between(1, 4)
+        )
+
+        # Join with game data
+        game_quarter_scores = gamedata.custom_join(
+            gamescores,
+            custom_on=["game_uuid"],
+            custom_how="inner",
+        )
+
+        # Sort and get end-of-quarter scores
+        game_quarter_scores.data = game_quarter_scores.data.sort(
+            ["game_uuid", "team_uuid", "quarter", "minuteAbsolute"]
+        )
+
+        quarter_final = game_quarter_scores.custom_groupby(
+            ["game_uuid", "team_uuid", "season", "quarter", "home_team_uuid", "away_team_uuid"],
+            pl.last("home_score").alias("home_score_end"),
+            pl.last("away_score").alias("away_score_end"),
+        )
+
+        # Calculate all metrics in optimized passes
+        quarter_final.data = quarter_final.data.sort(
+            ["game_uuid", "team_uuid", "quarter"]
+        ).with_columns([
+            # Start-of-quarter scores
+            pl.col("home_score_end").shift(1).over(["game_uuid", "team_uuid"]).fill_null(0).alias("home_score_start"),
+            pl.col("away_score_end").shift(1).over(["game_uuid", "team_uuid"]).fill_null(0).alias("away_score_start"),
+        ]).with_columns([
+            # Quarter points
+            (pl.col("home_score_end") - pl.col("home_score_start")).alias("home_quarter_points"),
+            (pl.col("away_score_end") - pl.col("away_score_start")).alias("away_quarter_points"),
+        ]).with_columns([
+            # Team's perspective
+            pl.when(pl.col("team_uuid") == pl.col("home_team_uuid"))
+            .then(pl.col("home_quarter_points"))
+            .otherwise(pl.col("away_quarter_points"))
+            .alias("team_points"),
+            pl.when(pl.col("team_uuid") == pl.col("home_team_uuid"))
+            .then(pl.col("away_quarter_points"))
+            .otherwise(pl.col("home_quarter_points"))
+            .alias("opponent_points"),
+            # Game margins
+            pl.when(pl.col("team_uuid") == pl.col("home_team_uuid"))
+            .then(pl.col("home_score_start") - pl.col("away_score_start"))
+            .otherwise(pl.col("away_score_start") - pl.col("home_score_start"))
+            .alias("game_margin_start"),
+            pl.when(pl.col("team_uuid") == pl.col("home_team_uuid"))
+            .then(pl.col("home_score_end") - pl.col("away_score_end"))
+            .otherwise(pl.col("away_score_end") - pl.col("home_score_end"))
+            .alias("game_margin_end"),
+        ]).with_columns([
+            # Derived metrics
+            (pl.col("team_points") - pl.col("opponent_points")).alias("quarter_margin"),
+            (pl.col("team_points") > pl.col("opponent_points")).cast(pl.Int32).alias("quarter_win"),
+            ((pl.col("game_margin_start") < 0) & (pl.col("game_margin_end") > 0)).cast(pl.Int32).alias("comeback_win"),
+            ((pl.col("game_margin_start") > 0) & (pl.col("game_margin_end") < 0)).cast(pl.Int32).alias("lead_blown"),
+        ])
+
+        # Select relevant columns and aggregate
+        quarter_stats = quarter_final.custom_select([
+            "team_uuid", "season", "quarter", "team_points", "opponent_points",
+            "quarter_margin", "quarter_win", "comeback_win", "lead_blown"
+        ])
+
+        quarter_agg = quarter_stats.custom_groupby(
+            ["team_uuid", "season", "quarter"],
+            pl.len().alias("total_games"),
+            pl.mean("team_points").alias("avg_points"),
+            pl.mean("opponent_points").alias("avg_points_allowed"),
+            pl.mean("quarter_margin").alias("avg_point_margin"),
+            pl.mean("quarter_win").alias("quarter_win_rate"),
+            pl.max("team_points").alias("max_scoring_run"),
+            pl.mean("team_points").alias("avg_largest_run"),
+            pl.sum("comeback_win").cast(pl.UInt32).alias("comeback_wins"),
+            pl.sum("lead_blown").cast(pl.UInt32).alias("lead_blown"),
+        )
+
+        # Join with team names
+        teamdata = teamdata.custom_select(["team_uuid", "team_name", "team_short_name"])
+        teamdata.data = teamdata.data.unique(subset=["team_uuid"], keep="first")
+
+        quarter_performance = quarter_agg.custom_join(
+            teamdata,
+            custom_on=["team_uuid"],
+            custom_how="left",
+        ).custom_select([
+            "team_uuid", "team_name", "team_short_name", "season", "quarter",
+            "total_games", "avg_points", "avg_points_allowed", "avg_point_margin",
+            "quarter_win_rate", "max_scoring_run", "avg_largest_run",
+            "comeback_wins", "lead_blown",
+        ])
+
+        CustomDF(
+            "teamquarterperformance_enriched",
+            initial_df=quarter_performance.data
+        ).write_table()
 
     else:
         raise ValueError(

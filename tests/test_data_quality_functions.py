@@ -352,7 +352,6 @@ def test_calculate_signalling_issues_values_sum_to_1():
         }
     ).with_columns(pl.col("signalling_id").cast(pl.Int64))
     result = calculate_signalling_issues(dataframe, signalling_check_dict)
-    print(result)
     assert_frame_equal(result, validation_df)
 
 

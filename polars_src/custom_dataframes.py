@@ -156,8 +156,6 @@ class CustomDF(DataReader):
 
         # Check if all of the rows are unique in the table
 
-        print(self._df.shape)
-        print(self._df.unique().shape)
         if len(self._df) != len(self._df.unique()):
             # The format of the DataFrame does not match the table definition
             raise ValueError("Not all rows in the table are unqiue")

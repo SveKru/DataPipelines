@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 from bs4 import BeautifulSoup
 import json
@@ -29,11 +30,22 @@ def json_file_exists(uuid, writing_path):
     return os.path.exists(file_path)
 
 
-def scrape_webpage(url):
+def scrape_webpage(url, session):
     """Scrape the initial webpage to find all appropriate links and their UUIDs."""
     try:
-        # Send a GET request to the URL
-        response = requests.get(url)
+        # Send a GET request to the URL using the persistent session
+        response = session.get(url)
+        print(f"Scraping {url} - Status: {response.status_code}")
+        
+        # Log if we got redirected (common sign of verification failing)
+        if response.history:
+            print(f"  Redirected from {[r.url for r in response.history]} to {response.url}")
+            
+        if "captcha" in response.text.lower() or "verificat" in response.text.lower():
+            print("  WARNING: The response contains 'captcha' or 'verification' keywords. Session might be invalid.")
+            save_html_to_file(response.text, "debug_blocked_page.html")
+            print("  Saved blocked page content to debug_blocked_page.html")
+
         response.raise_for_status()  # Raise an HTTPError for bad responses (4xx and 5xx)
 
         # Parse the HTML content using BeautifulSoup
@@ -66,15 +78,15 @@ def scrape_webpage(url):
         return []
 
 
-def fetch_game_data(api_url, uuid, writing_path):
+def fetch_game_data(api_url, uuid, writing_path, session):
     """Fetch game data from the API using the UUID."""
     try:
         # Construct the API URL
         full_api_url = f"{api_url}/{uuid}?currentSeason=true"
         print(f"Fetching data from API: {full_api_url}")
 
-        # Send a GET request to the API
-        response = requests.get(full_api_url)
+        # Send a GET request to the API using the persistent session
+        response = session.get(full_api_url)
         response.raise_for_status()  # Raise an HTTPError for bad responses (4xx and 5xx)
 
         # Parse the JSON response
@@ -94,16 +106,39 @@ def fetch_game_data(api_url, uuid, writing_path):
 
 
 def data_scraper(
-    writing_path: str, query_args_list: list[dict], base_url: str, api_url: str
+    writing_path: str,
+    query_args_list: list[dict],
+    base_url: str,
+    api_url: str,
+    cookies: dict = None,
+    user_agent: str = None,
+    headers: dict = None,
 ):
+    resolved_user_agent = user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+
+    # Initialize a persistent session to maintain cookies and headers across all requests
+    session = requests.Session()
+
+    session.headers.update({
+        "User-Agent": resolved_user_agent,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Referer": base_url,
+    })
+
+    if headers:
+        session.headers.update(headers)
+
+    if cookies:
+        session.cookies.update(cookies)
+
     for arg in query_args_list:
         #  This is the URL for all of the past competitions, which are archived
         # initial_url = f"https://www.basquetcatala.cat/competicions-anteriors/resultat/{year}/{competition_code}/{phase}/{group}"
         initial_url = f"{base_url}/{arg['url']}"
-        # Replace with the base API URL
 
         # Step 1: Scrape the initial webpage to find all UUIDs
-        uuids = scrape_webpage(initial_url)
+        uuids = scrape_webpage(initial_url, session)
 
         print(uuids)
 
@@ -114,7 +149,7 @@ def data_scraper(
                     print(f"JSON file for UUID {uuid} already exists. Skipping...")
                     continue
 
-                # save the initial arguments to a json dict
+                # ... existing code remains for saving args ...
                 initial_args = {
                     "year": arg["year"],
                     "competition_code": arg["competition_code"],
@@ -123,7 +158,6 @@ def data_scraper(
                     "long_name": arg["long_name"],
                     "uuid": uuid,
                 }
-                # write the arg to file in append mode
                 os.makedirs(f"{writing_path}/mapping", exist_ok=True)
                 with open(
                     f"{writing_path}/mapping/query_args.json", "a", encoding="utf-8"
@@ -131,7 +165,9 @@ def data_scraper(
                     json.dump(initial_args, file)
                     file.write("\n")
 
-                game_data = fetch_game_data(api_url, uuid, writing_path)
+                game_data = fetch_game_data(api_url, uuid, writing_path, session)
 
                 if game_data:
                     print(f"Game data for UUID {uuid} fetched successfully.")
+
+                time.sleep(1)
