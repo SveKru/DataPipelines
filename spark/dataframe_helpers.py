@@ -63,9 +63,15 @@ def get_data_location(schema: dict, partition_name: str = "") -> str:
     """
 
     if partition_name:
-        return os.path.join(os.getcwd(),'data',schema['container'],schema['location'],f"{schema['partition_column']}={partition_name}")
+        return os.path.join(
+            os.getcwd(),
+            "data",
+            schema["container"],
+            schema["location"],
+            f"{schema['partition_column']}={partition_name}",
+        )
 
-    return os.path.join(os.getcwd(),'data',schema['container'],schema['location'])
+    return os.path.join(os.getcwd(), "data", schema["container"], schema["location"])
 
 
 def create_table_name(environment: str, container: str, location: str) -> str:
@@ -80,7 +86,7 @@ def create_table_name(environment: str, container: str, location: str) -> str:
     Returns:
         str: The formatted table name.
     """
-    return f"`{environment}`.`{container}`.`{location.replace('.','')}`"
+    return f"`{environment}`.`{container}`.`{location.replace('.', '')}`"
 
 
 def clean_column_names(data_frame: DataFrame) -> DataFrame:
@@ -116,10 +122,10 @@ def create_catalog_schema(environment: str, schema: dict) -> str:
     """
 
     create_catalog_schema_string = (
-        f'CREATE SCHEMA IF NOT EXISTS {environment}.{schema["container"]};'
+        f"CREATE SCHEMA IF NOT EXISTS {environment}.{schema['container']};"
     )
     create_catalog_schema_owner = (
-        f'ALTER SCHEMA {environment}.{schema["container"]} SET OWNER TO tiltDevelopers;'
+        f"ALTER SCHEMA {environment}.{schema['container']} SET OWNER TO tiltDevelopers;"
     )
 
     return create_catalog_schema_string, create_catalog_schema_owner
@@ -164,8 +170,7 @@ def apply_scd_type_2(new_table: DataFrame, existing_table: DataFrame) -> DataFra
     if [col for col in new_table.columns if col.startswith("map_")]:
         # This is supposed to check if we are creating the the monitoring_valus table
         if not "signalling_id" in existing_table.columns:
-            map_col = [
-                col for col in new_table.columns if col.startswith("map_")][0]
+            map_col = [col for col in new_table.columns if col.startswith("map_")][0]
             existing_table = existing_table.withColumn(
                 map_col, F.create_map().cast("Map<String, Array<String>>")
             )
@@ -177,8 +182,7 @@ def apply_scd_type_2(new_table: DataFrame, existing_table: DataFrame) -> DataFra
     value_columns = [
         F.col(col_name)
         for col_name in new_table.columns
-        if col_name not in ["RecordID", "from_date", "to_date"]
-        and col_name != map_col
+        if col_name not in ["RecordID", "from_date", "to_date"] and col_name != map_col
     ]
 
     old_closed_records = existing_table.filter(F.col("to_date") != future_date).select(
@@ -197,8 +201,7 @@ def apply_scd_type_2(new_table: DataFrame, existing_table: DataFrame) -> DataFra
     new_data_frame = new_data_frame.withColumn("from_date", processing_date).withColumn(
         "to_date", F.to_date(future_date)
     )
-    new_data_frame = new_data_frame.withColumnRenamed(
-        "shaValue", "shaValueNew")
+    new_data_frame = new_data_frame.withColumnRenamed("shaValue", "shaValueNew")
 
     # Join the SHA values of both tables together
     combined_df = new_data_frame.select(F.col("shaValueNew")).join(
@@ -214,13 +217,18 @@ def apply_scd_type_2(new_table: DataFrame, existing_table: DataFrame) -> DataFra
         (F.col("shaValueOld").isNotNull()) & (F.col("shaValueNew").isNotNull())
     )
     if identical_records.count() > 0:
-        identical_records = combined_df.filter(
-            (F.col("shaValueOld").isNotNull()) & (
-                F.col("shaValueNew").isNotNull())
-        ).join(new_data_frame.drop('from_date'), on="shaValueNew", how="inner"
-               ).join(old_df.select(["shaValueOld", "from_date"]), on="shaValueOld", how="inner")
-        identical_records = identical_records.select(
-            value_columns + from_to_list)
+        identical_records = (
+            combined_df.filter(
+                (F.col("shaValueOld").isNotNull()) & (F.col("shaValueNew").isNotNull())
+            )
+            .join(new_data_frame.drop("from_date"), on="shaValueNew", how="inner")
+            .join(
+                old_df.select(["shaValueOld", "from_date"]),
+                on="shaValueOld",
+                how="inner",
+            )
+        )
+        identical_records = identical_records.select(value_columns + from_to_list)
         all_records = all_records.union(identical_records)
 
     # Records that do not exist anymore are taken from the existing set of data
@@ -230,8 +238,7 @@ def apply_scd_type_2(new_table: DataFrame, existing_table: DataFrame) -> DataFra
     )
     if closed_records.count() > 0:
         closed_records = combined_df.filter(
-            (F.col("shaValueOld").isNotNull()) & (
-                F.col("shaValueNew").isNull())
+            (F.col("shaValueOld").isNotNull()) & (F.col("shaValueNew").isNull())
         ).join(old_df, on="shaValueOld", how="inner")
         closed_records = closed_records.select(value_columns + from_to_list)
         closed_records = closed_records.withColumn("to_date", processing_date)
@@ -243,8 +250,7 @@ def apply_scd_type_2(new_table: DataFrame, existing_table: DataFrame) -> DataFra
     )
     if new_records.count() > 0:
         new_records = combined_df.filter(
-            (F.col("shaValueOld").isNull()) & (
-                F.col("shaValueNew").isNotNull())
+            (F.col("shaValueOld").isNull()) & (F.col("shaValueNew").isNotNull())
         ).join(new_data_frame, on="shaValueNew", how="inner")
         new_records = new_records.select(value_columns + from_to_list)
         all_records = all_records.union(new_records)
@@ -255,7 +261,6 @@ def apply_scd_type_2(new_table: DataFrame, existing_table: DataFrame) -> DataFra
 def assign_signalling_id(
     monitoring_values_df: DataFrame, existing_monitoring_df: DataFrame
 ) -> DataFrame:
-
     max_issue = (
         existing_monitoring_df.fillna(0, subset="signalling_id")
         .select(F.max(F.col("signalling_id")).alias("max_signalling_id"))
@@ -265,8 +270,7 @@ def assign_signalling_id(
         max_issue = 0
     existing_monitoring_df = (
         existing_monitoring_df.select(
-            [F.col(c).alias(c + "_old")
-             for c in existing_monitoring_df.columns]
+            [F.col(c).alias(c + "_old") for c in existing_monitoring_df.columns]
         )
         .select(
             [
@@ -304,8 +308,7 @@ def assign_signalling_id(
         non_existing_signalling_id
     )
     monitoring_values_intermediate = monitoring_values_intermediate.withColumn(
-        "signalling_id", F.coalesce(
-            F.col("signalling_id_old"), F.col("signalling_id"))
+        "signalling_id", F.coalesce(F.col("signalling_id_old"), F.col("signalling_id"))
     )
     monitoring_values_df = monitoring_values_intermediate.select(
         [
@@ -323,23 +326,30 @@ def assign_signalling_id(
 
 
 def ledger_x_ecoinvent_matcher(ledger, ecoinvent):
-  
-    ledger_cols = ["ledger."+column for column in ledger.columns]
-    init_df = ecoinvent.alias("ei").join(ledger.alias("ledger"),
-                                         (
-        (F.col('ei.geography') == F.col(f'ledger.ecoinvent_geography')) &
-        (F.col('ei.isic_4digit') == F.col('ledger.isic_code')) &
-        (F.col('ei.cpc_code') == F.col('ledger.cpc_code')) &
-        (F.col('ei.activity_type') == F.col('ledger.activity_type'))
-    ), how="right")
+    ledger_cols = ["ledger." + column for column in ledger.columns]
+    init_df = ecoinvent.alias("ei").join(
+        ledger.alias("ledger"),
+        (
+            (F.col("ei.geography") == F.col(f"ledger.ecoinvent_geography"))
+            & (F.col("ei.isic_4digit") == F.col("ledger.isic_code"))
+            & (F.col("ei.cpc_code") == F.col("ledger.cpc_code"))
+            & (F.col("ei.activity_type") == F.col("ledger.activity_type"))
+        ),
+        how="right",
+    )
     complete_df = init_df.filter(init_df.activity_uuid_product_uuid.isNotNull()).drop(
-        F.col("ei.geography"), F.col("ei.cpc_code"), F.col("ei.activity_type"))
+        F.col("ei.geography"), F.col("ei.cpc_code"), F.col("ei.activity_type")
+    )
     # unmatched_records = init_df.filter(init_df.activity_uuid_product_uuid.isNull()).select(ledger_cols)
     windowSpec = Window.partitionBy(
-        "tiltledger_id", "reference_product_name", "activity_name", "activity_type").orderBy("priority")
+        "tiltledger_id", "reference_product_name", "activity_name", "activity_type"
+    ).orderBy("priority")
 
-    ledger_ecoinvent_mapping = complete_df.withColumn("row_number", F.dense_rank(
-    ).over(windowSpec)).filter("row_number = 1").drop("row_number")
+    ledger_ecoinvent_mapping = (
+        complete_df.withColumn("row_number", F.dense_rank().over(windowSpec))
+        .filter("row_number = 1")
+        .drop("row_number")
+    )
     return ledger_ecoinvent_mapping
 
 
@@ -347,8 +357,7 @@ def check_nonempty_tiltsectors_for_nonempty_isic_pyspark(df):
     isic = df.select(df.colRegex("`.*isic_code.*`")).columns[0]
     tilt_sec = df.select(df.colRegex("`.*tilt_sector.*`")).columns[0]
     tilt_subsec = df.select(df.colRegex("`.*tilt_subsector.*`")).columns[0]
-    test_null_tiltsec = df.filter(
-        df[isic].isNotNull()).select(tilt_sec, tilt_subsec)
+    test_null_tiltsec = df.filter(df[isic].isNotNull()).select(tilt_sec, tilt_subsec)
 
     # Check for null rows in tilt_sec column
     null_tiltsec = test_null_tiltsec.filter(F.col(tilt_sec).isNull())
@@ -357,7 +366,8 @@ def check_nonempty_tiltsectors_for_nonempty_isic_pyspark(df):
     # Check if both columns have no null rows
     if null_tiltsec.count() == 0 and null_tiltsubsec.count() != 0:
         raise ValueError(
-            "For every isic there should be a tilt_sector & tilt_subsector")
+            "For every isic there should be a tilt_sector & tilt_subsector"
+        )
     print("Non-empty tiltsector for non-empty isic_code check passed")
 
 
@@ -372,9 +382,10 @@ def sanitize_co2(df):
     # first check if the isic_4digit column exists
     if "isic_code" not in df.columns:
         # throw an error stating that the column is missing
-        raise ValueError('isic_code column is missing')
-    df = df.withColumn('isic_code', F.lpad(
-        F.regexp_replace("isic_code", "'", ""), 4, '0'))
+        raise ValueError("isic_code column is missing")
+    df = df.withColumn(
+        "isic_code", F.lpad(F.regexp_replace("isic_code", "'", ""), 4, "0")
+    )
     return df
 
 
@@ -386,11 +397,11 @@ def column_check(df1):
     important_cols = [co2_footprint, tilt_sec, unit]
     # raise error if the df1 or df2 is empty
     if df1.isEmpty():
-        raise ValueError('Dataframe is empty')
+        raise ValueError("Dataframe is empty")
 
     # check if the important columns needed for the calculation are present in the dataframe
     if len(important_cols) != 3:
-        raise ValueError('Important columns are missing')
+        raise ValueError("Important columns are missing")
 
     print("Column presence check passed")
 
@@ -398,8 +409,7 @@ def column_check(df1):
 def prepare_co2(co2_df):
     isic = co2_df.select(co2_df.colRegex("`.*isic_code.*`")).columns[0]
     tilt_sec = co2_df.select(co2_df.colRegex("`.*tilt_sector.*`")).columns[0]
-    co2_footprint = co2_df.select(
-        co2_df.colRegex("`.*co2_footprint.*`")).columns[0]
+    co2_footprint = co2_df.select(co2_df.colRegex("`.*co2_footprint.*`")).columns[0]
     co2_df = co2_df.filter(co2_df[tilt_sec].isNotNull())
     co2_df = co2_df.filter(co2_df[isic].isNotNull())
     co2_df = co2_df.filter(co2_df[co2_footprint].isNotNull())
@@ -439,8 +449,7 @@ def format_postcode(postcode: str, city: str) -> str:
     # city mostly looks like: 'ab city_name'
 
     # if postcode and city are identical, take the postcode; otherwise concatenate the two into '1234ab city_name'
-    reference = F.when(postcode == city, postcode).otherwise(
-        F.concat(postcode, city))
+    reference = F.when(postcode == city, postcode).otherwise(F.concat(postcode, city))
 
     # if reference is just the city or NA, just just return empty string
     reference = F.when(
@@ -470,8 +479,9 @@ def keep_one_name(default_name: str, statutory_name: str) -> str:
     return name
 
 
-def emissions_profile_compute(emission_data, ledger_ecoinvent_mapping,  output_type="combined"):
-
+def emissions_profile_compute(
+    emission_data, ledger_ecoinvent_mapping, output_type="combined"
+):
     # define a dictionary with the 6 different benchmark types
     benchmark_types = {
         "all": [],
@@ -479,7 +489,7 @@ def emissions_profile_compute(emission_data, ledger_ecoinvent_mapping,  output_t
         "tilt_sector": ["tilt_sector"],
         "unit": ["unit"],
         "unit_isic_4digit": ["unit", "isic_code"],
-        "unit_tilt_sector": ["unit", "tilt_sector"]
+        "unit_tilt_sector": ["unit", "tilt_sector"],
     }
 
     groups = []
@@ -493,61 +503,79 @@ def emissions_profile_compute(emission_data, ledger_ecoinvent_mapping,  output_t
                 windowSpec = Window.orderBy("co2_footprint")
                 # Add the dense rank column
                 temp_df = temp_df.withColumn(
-                    'dense_rank', F.dense_rank().over(windowSpec))
+                    "dense_rank", F.dense_rank().over(windowSpec)
+                )
                 # Divide the dense rank by length and create the profile_ranking column
-                temp_df = temp_df.withColumn('profile_ranking', F.col(
-                    'dense_rank') / F.lit(length)).drop(F.col('dense_rank'))
+                temp_df = temp_df.withColumn(
+                    "profile_ranking", F.col("dense_rank") / F.lit(length)
+                ).drop(F.col("dense_rank"))
             else:
                 all_columns = emission_data.columns
-                grouping_columns = [column for column in all_columns if any(
-                    pattern in column for pattern in cols)]
-                windowSpec = Window.partitionBy(
-                    grouping_columns).orderBy(F.col('co2_footprint'))
+                grouping_columns = [
+                    column
+                    for column in all_columns
+                    if any(pattern in column for pattern in cols)
+                ]
+                windowSpec = Window.partitionBy(grouping_columns).orderBy(
+                    F.col("co2_footprint")
+                )
                 temp_df = temp_df.withColumn(
-                    'dense_rank', F.dense_rank().over(windowSpec))
-                temp_df = temp_df.withColumn('length', F.count(
-                    '*').over(Window.partitionBy(grouping_columns)))
-                temp_df = temp_df.withColumn('profile_ranking', F.col(
-                    'dense_rank') / F.col('length')).drop("dense_rank", "length")
+                    "dense_rank", F.dense_rank().over(windowSpec)
+                )
+                temp_df = temp_df.withColumn(
+                    "length", F.count("*").over(Window.partitionBy(grouping_columns))
+                )
+                temp_df = temp_df.withColumn(
+                    "profile_ranking", F.col("dense_rank") / F.col("length")
+                ).drop("dense_rank", "length")
             temp_df = temp_df.withColumn("benchmark_group", F.lit(bench_type))
             groups.append(temp_df)
 
         # Concatenate the DataFrames
-        concatenated_df = reduce(lambda df1, df2: df1.unionAll(
-            df2), groups).withColumnsRenamed({"reference_product_name": "product_name"})
+        concatenated_df = reduce(
+            lambda df1, df2: df1.unionAll(df2), groups
+        ).withColumnsRenamed({"reference_product_name": "product_name"})
 
         concatenated_df = ledger_ecoinvent_mapping.join(
-            concatenated_df, on="activity_uuid_product_uuid", how="left").filter(F.col("benchmark_group").isNotNull())
+            concatenated_df, on="activity_uuid_product_uuid", how="left"
+        ).filter(F.col("benchmark_group").isNotNull())
 
         # Sum the profile_ranking values for each tiltledger_id
         average_df = concatenated_df.groupBy("tiltledger_id", "benchmark_group").agg(
-            F.avg("profile_ranking").alias("average_profile_ranking"))
+            F.avg("profile_ranking").alias("average_profile_ranking")
+        )
 
-        average_co2_df = concatenated_df.groupBy("tiltledger_id", "benchmark_group").agg(
-            F.avg("co2_footprint").alias("average_co2_footprint"))
+        average_co2_df = concatenated_df.groupBy(
+            "tiltledger_id", "benchmark_group"
+        ).agg(F.avg("co2_footprint").alias("average_co2_footprint"))
 
         # Join the average_df with concatenated_df to add the average_profile_ranking column
-        concatenated_df = concatenated_df.join(average_df, ["tiltledger_id", "benchmark_group"]).join(
-            average_co2_df, ["tiltledger_id", "benchmark_group"])
+        concatenated_df = concatenated_df.join(
+            average_df, ["tiltledger_id", "benchmark_group"]
+        ).join(average_co2_df, ["tiltledger_id", "benchmark_group"])
 
         # Drop duplicate tilt records per benchmark type
         concatenated_df = concatenated_df.dropDuplicates(
-            subset=["tiltledger_id", "benchmark_group"]).drop("profile_ranking")
+            subset=["tiltledger_id", "benchmark_group"]
+        ).drop("profile_ranking")
 
         concatenated_df = concatenated_df.withColumn(
             "risk_category",
-            F.when(F.col("average_profile_ranking") <= 1/3, "low")
-            .when((F.col("average_profile_ranking") > 1/3) &
-                  (F.col("average_profile_ranking") <= 2/3), "medium")
-            .otherwise("high")
+            F.when(F.col("average_profile_ranking") <= 1 / 3, "low")
+            .when(
+                (F.col("average_profile_ranking") > 1 / 3)
+                & (F.col("average_profile_ranking") <= 2 / 3),
+                "medium",
+            )
+            .otherwise("high"),
         )
     return concatenated_df
 
 
-def emissions_profile_upstream_compute(emission_data_upstream, ledger_ecoinvent_mapping, output_type="combined"):
-
+def emissions_profile_upstream_compute(
+    emission_data_upstream, ledger_ecoinvent_mapping, output_type="combined"
+):
     if output_type == "combined":
-
         # define a dictionary with the 6 different benchmark types
         benchmark_types = {
             "all": [],
@@ -555,113 +583,217 @@ def emissions_profile_upstream_compute(emission_data_upstream, ledger_ecoinvent_
             "window_input_tilt_sector": ["input_tilt_sector"],
             "window_input_unit": ["input_unit"],
             "window_input_unit_isic_4digit": ["input_unit", "input_isic_4digit"],
-            "window_input_unit_tilt_sector": ["input_unit", "input_tilt_sector"]
+            "window_input_unit_tilt_sector": ["input_unit", "input_tilt_sector"],
         }
 
         window_all = Window.orderBy("input_co2_footprint")
-        window_input_isic_4digit = Window.partitionBy(
-            "input_isic_code").orderBy("input_co2_footprint")
-        window_input_tilt_sector = Window.partitionBy(
-            "input_tilt_sector").orderBy("input_co2_footprint")
-        window_input_unit = Window.partitionBy(
-            "input_unit").orderBy("input_co2_footprint")
+        window_input_isic_4digit = Window.partitionBy("input_isic_code").orderBy(
+            "input_co2_footprint"
+        )
+        window_input_tilt_sector = Window.partitionBy("input_tilt_sector").orderBy(
+            "input_co2_footprint"
+        )
+        window_input_unit = Window.partitionBy("input_unit").orderBy(
+            "input_co2_footprint"
+        )
         window_input_unit_isic_4digit = Window.partitionBy(
-            "input_unit", "input_isic_code").orderBy("input_co2_footprint")
+            "input_unit", "input_isic_code"
+        ).orderBy("input_co2_footprint")
         window_input_unit_tilt_sector = Window.partitionBy(
-            "input_unit", "input_tilt_sector").orderBy("input_co2_footprint")
+            "input_unit", "input_tilt_sector"
+        ).orderBy("input_co2_footprint")
 
         emission_data_upstream.data = emission_data_upstream.data.withColumn(
-            "rank_all", F.dense_rank().over(window_all))
+            "rank_all", F.dense_rank().over(window_all)
+        )
         emission_data_upstream.data = emission_data_upstream.data.withColumn(
-            "rank_input_isic_4digit", F.dense_rank().over(window_input_isic_4digit))
+            "rank_input_isic_4digit", F.dense_rank().over(window_input_isic_4digit)
+        )
         emission_data_upstream.data = emission_data_upstream.data.withColumn(
-            "rank_input_tilt_sector", F.dense_rank().over(window_input_tilt_sector))
+            "rank_input_tilt_sector", F.dense_rank().over(window_input_tilt_sector)
+        )
         emission_data_upstream.data = emission_data_upstream.data.withColumn(
-            "rank_input_unit", F.dense_rank().over(window_input_unit))
+            "rank_input_unit", F.dense_rank().over(window_input_unit)
+        )
         emission_data_upstream.data = emission_data_upstream.data.withColumn(
-            "rank_input_unit_isic_4digit", F.dense_rank().over(window_input_unit_isic_4digit))
+            "rank_input_unit_isic_4digit",
+            F.dense_rank().over(window_input_unit_isic_4digit),
+        )
         emission_data_upstream.data = emission_data_upstream.data.withColumn(
-            "rank_input_unit_tilt_sector", F.dense_rank().over(window_input_unit_tilt_sector))
+            "rank_input_unit_tilt_sector",
+            F.dense_rank().over(window_input_unit_tilt_sector),
+        )
 
         emission_data_upstream.data = emission_data_upstream.data.withColumn(
-            "rank_all", F.col("rank_all")/F.max("rank_all").over(window_all.rangeBetween(Window.unboundedPreceding, Window.unboundedFollowing)))
+            "rank_all",
+            F.col("rank_all")
+            / F.max("rank_all").over(
+                window_all.rangeBetween(
+                    Window.unboundedPreceding, Window.unboundedFollowing
+                )
+            ),
+        )
         emission_data_upstream.data = emission_data_upstream.data.withColumn(
-            "rank_input_isic_4digit", F.col("rank_input_isic_4digit")/F.max("rank_input_isic_4digit").over(window_input_isic_4digit.rangeBetween(Window.unboundedPreceding, Window.unboundedFollowing)))
+            "rank_input_isic_4digit",
+            F.col("rank_input_isic_4digit")
+            / F.max("rank_input_isic_4digit").over(
+                window_input_isic_4digit.rangeBetween(
+                    Window.unboundedPreceding, Window.unboundedFollowing
+                )
+            ),
+        )
         emission_data_upstream.data = emission_data_upstream.data.withColumn(
-            "rank_input_tilt_sector", F.col("rank_input_tilt_sector")/F.max("rank_input_tilt_sector").over(window_input_tilt_sector.rangeBetween(Window.unboundedPreceding, Window.unboundedFollowing)))
+            "rank_input_tilt_sector",
+            F.col("rank_input_tilt_sector")
+            / F.max("rank_input_tilt_sector").over(
+                window_input_tilt_sector.rangeBetween(
+                    Window.unboundedPreceding, Window.unboundedFollowing
+                )
+            ),
+        )
         emission_data_upstream.data = emission_data_upstream.data.withColumn(
-            "rank_input_unit", F.col("rank_input_unit")/F.max("rank_input_unit").over(window_input_unit.rangeBetween(Window.unboundedPreceding, Window.unboundedFollowing)))
+            "rank_input_unit",
+            F.col("rank_input_unit")
+            / F.max("rank_input_unit").over(
+                window_input_unit.rangeBetween(
+                    Window.unboundedPreceding, Window.unboundedFollowing
+                )
+            ),
+        )
         emission_data_upstream.data = emission_data_upstream.data.withColumn(
-            "rank_input_unit_isic_4digit", F.col("rank_input_unit_isic_4digit")/F.max("rank_input_unit_isic_4digit").over(window_input_unit_isic_4digit.rangeBetween(Window.unboundedPreceding, Window.unboundedFollowing)))
+            "rank_input_unit_isic_4digit",
+            F.col("rank_input_unit_isic_4digit")
+            / F.max("rank_input_unit_isic_4digit").over(
+                window_input_unit_isic_4digit.rangeBetween(
+                    Window.unboundedPreceding, Window.unboundedFollowing
+                )
+            ),
+        )
         emission_data_upstream.data = emission_data_upstream.data.withColumn(
-            "rank_input_unit_tilt_sector", F.col("rank_input_unit_tilt_sector")/F.max("rank_input_unit_tilt_sector").over(window_input_unit_tilt_sector.rangeBetween(Window.unboundedPreceding, Window.unboundedFollowing)))
+            "rank_input_unit_tilt_sector",
+            F.col("rank_input_unit_tilt_sector")
+            / F.max("rank_input_unit_tilt_sector").over(
+                window_input_unit_tilt_sector.rangeBetween(
+                    Window.unboundedPreceding, Window.unboundedFollowing
+                )
+            ),
+        )
 
-        emission_data_upstream.data = emission_data_upstream.data.unpivot(["activity_uuid_product_uuid", "input_activity_uuid_product_uuid", "input_co2_footprint", emission_data_upstream.map_col], [
-            "rank_all", "rank_input_isic_4digit", "rank_input_tilt_sector", "rank_input_unit", "rank_input_unit_isic_4digit", "rank_input_unit_tilt_sector"], "benchmark_group", "profile_ranking")
+        emission_data_upstream.data = emission_data_upstream.data.unpivot(
+            [
+                "activity_uuid_product_uuid",
+                "input_activity_uuid_product_uuid",
+                "input_co2_footprint",
+                emission_data_upstream.map_col,
+            ],
+            [
+                "rank_all",
+                "rank_input_isic_4digit",
+                "rank_input_tilt_sector",
+                "rank_input_unit",
+                "rank_input_unit_isic_4digit",
+                "rank_input_unit_tilt_sector",
+            ],
+            "benchmark_group",
+            "profile_ranking",
+        )
 
         emission_data_upstream.data = emission_data_upstream.data.withColumn(
-            "benchmark_group", F.regexp_replace(F.col('benchmark_group'), 'rank_', ''))
+            "benchmark_group", F.regexp_replace(F.col("benchmark_group"), "rank_", "")
+        )
 
         emission_data_upstream = ledger_ecoinvent_mapping.custom_join(
-            emission_data_upstream, custom_on="activity_uuid_product_uuid", custom_how="left")
+            emission_data_upstream,
+            custom_on="activity_uuid_product_uuid",
+            custom_how="left",
+        )
 
         emission_data_upstream.data = emission_data_upstream.data.filter(
-            F.col("benchmark_group").isNotNull())
-
-        emission_data_upstream = emission_data_upstream.custom_select(
-            ["input_activity_uuid_product_uuid", "tiltledger_id", "benchmark_group", "profile_ranking", "input_co2_footprint"])
-
-        emission_data_upstream = emission_data_upstream.custom_groupby(["tiltledger_id", "benchmark_group"], F.avg("profile_ranking").alias("average_input_profile_rank"),
-                                                                       F.avg("input_co2_footprint").alias("average_input_co2_footprint"))
-
-        emission_data_upstream.data = emission_data_upstream.data.withColumn(
-            "risk_category",
-            F.when(F.col("average_input_profile_rank") <= 1/3, "low")
-            .when((F.col("average_input_profile_rank") > 1/3) &
-                  (F.col("average_input_profile_rank") <= 2/3), "medium")
-            .otherwise("high")
+            F.col("benchmark_group").isNotNull()
         )
 
         emission_data_upstream = emission_data_upstream.custom_select(
-            ['tiltledger_id', 'benchmark_group', 'average_input_profile_rank', 'average_input_co2_footprint', 'risk_category'])
+            [
+                "input_activity_uuid_product_uuid",
+                "tiltledger_id",
+                "benchmark_group",
+                "profile_ranking",
+                "input_co2_footprint",
+            ]
+        )
+
+        emission_data_upstream = emission_data_upstream.custom_groupby(
+            ["tiltledger_id", "benchmark_group"],
+            F.avg("profile_ranking").alias("average_input_profile_rank"),
+            F.avg("input_co2_footprint").alias("average_input_co2_footprint"),
+        )
+
+        emission_data_upstream.data = emission_data_upstream.data.withColumn(
+            "risk_category",
+            F.when(F.col("average_input_profile_rank") <= 1 / 3, "low")
+            .when(
+                (F.col("average_input_profile_rank") > 1 / 3)
+                & (F.col("average_input_profile_rank") <= 2 / 3),
+                "medium",
+            )
+            .otherwise("high"),
+        )
+
+        emission_data_upstream = emission_data_upstream.custom_select(
+            [
+                "tiltledger_id",
+                "benchmark_group",
+                "average_input_profile_rank",
+                "average_input_co2_footprint",
+                "risk_category",
+            ]
+        )
 
     return emission_data_upstream
 
 
 def calculate_reductions(reductions_dataframe, name_replace_dict):
     # 1. Identify columns
-    sector_cols = [
-        col for col in reductions_dataframe.columns if '_sector' in col]
+    sector_cols = [col for col in reductions_dataframe.columns if "_sector" in col]
     subsector_cols = [
-        col for col in reductions_dataframe.columns if '_subsector' in col]
+        col for col in reductions_dataframe.columns if "_subsector" in col
+    ]
     if sector_cols and subsector_cols:
         sector = sector_cols[0]
         subsector = subsector_cols[0]
 
         # 2. Sort is not needed in PySpark as Window function will handle the ordering
-        reductions_dataframe = reductions_dataframe.orderBy(['scenario', 'region', sector, subsector, 'year'],
-                                                            ascending=True)
+        reductions_dataframe = reductions_dataframe.orderBy(
+            ["scenario", "region", sector, subsector, "year"], ascending=True
+        )
 
         # 3. Define the window specification
-        windowSpec = Window.partitionBy("scenario", "region", sector, subsector).rowsBetween(
-            Window.unboundedPreceding, Window.currentRow)
+        windowSpec = Window.partitionBy(
+            "scenario", "region", sector, subsector
+        ).rowsBetween(Window.unboundedPreceding, Window.currentRow)
 
         # 4. Calculate reductions
         reductions_dataframe = reductions_dataframe.withColumn(
-            "first_value", F.first("value").over(windowSpec))
+            "first_value", F.first("value").over(windowSpec)
+        )
         reductions_dataframe = reductions_dataframe.withColumn(
-            "reductions", (1 - (F.col("value") / F.col("first_value"))).cast("double"))
+            "reductions", (1 - (F.col("value") / F.col("first_value"))).cast("double")
+        )
         reductions_dataframe = reductions_dataframe.withColumn(
-            "reductions", F.round("reductions", 2))
+            "reductions", F.round("reductions", 2)
+        )
 
         # 5. Filter only on year 2030 and 2050 targets
         reductions_dataframe = reductions_dataframe.filter(
-            F.col("year").isin([2030, 2050]))
+            F.col("year").isin([2030, 2050])
+        )
 
         # 6. Make the scenario names more concise
         for key, value in name_replace_dict.items():
-            reductions_dataframe = reductions_dataframe.withColumn('scenario', F.when(
-                F.col('scenario') == key, value).otherwise(F.col('scenario')))
+            reductions_dataframe = reductions_dataframe.withColumn(
+                "scenario",
+                F.when(F.col("scenario") == key, value).otherwise(F.col("scenario")),
+            )
 
         return reductions_dataframe
     else:
@@ -670,7 +802,7 @@ def calculate_reductions(reductions_dataframe, name_replace_dict):
 
 def scenario_preparing(data):
     # 1. Identify columns containing 'sector' and extract the scenario_type
-    sector_columns = [col for col in data.columns if 'sector' in col]
+    sector_columns = [col for col in data.columns if "sector" in col]
     scenario_types = list(set(col.split("_")[0] for col in sector_columns))
 
     if scenario_types:
@@ -686,8 +818,7 @@ def scenario_preparing(data):
         data = data.withColumn("scenario_type", F.lit(scenario_type))
 
         # 4. Rename columns
-        data = data.withColumnRenamed(
-            "scenario", "scenario_name").drop("first_value")
+        data = data.withColumnRenamed("scenario", "scenario_name").drop("first_value")
     return data
 
 
@@ -698,14 +829,18 @@ def get_combined_targets(ipr, weo):
     # Check if 'reductions' column exists and its type is float64 (DoubleType in PySpark)
     try:
         reductions_field = [
-            f for f in combined_targets.data.schema.fields if f.name == 'reductions'][0]
+            f for f in combined_targets.data.schema.fields if f.name == "reductions"
+        ][0]
         if not isinstance(reductions_field.dataType, T.DoubleType):
             raise ValueError(
-                f"`reductions` column in `combined_targets` is not `float64`")
+                f"`reductions` column in `combined_targets` is not `float64`"
+            )
     except IndexError:
         raise ValueError("`reductions` column not found in `combined_targets`")
 
-    return combined_targets.custom_drop(["scenario_targets_ipr_id", "scenario_targets_weo_id"])
+    return combined_targets.custom_drop(
+        ["scenario_targets_ipr_id", "scenario_targets_weo_id"]
+    )
 
 
 def sector_profile_compute(input_sector_profile_ledger_x):
@@ -714,21 +849,29 @@ def sector_profile_compute(input_sector_profile_ledger_x):
     df_2050 = input_sector_profile_ledger_x.filter(F.col("year") == 2050)
 
     # Setting different thresholds for each dataframe
-    low_threshold_2030, high_threshold_2030 = 1/9, 1/3  # thresholds for 2030
-    low_threshold_2050, high_threshold_2050 = 2/9, 2/3   # thresholds for 2050
+    low_threshold_2030, high_threshold_2030 = 1 / 9, 1 / 3  # thresholds for 2030
+    low_threshold_2050, high_threshold_2050 = 2 / 9, 2 / 3  # thresholds for 2050
 
     df_2030 = df_2030.withColumn(
         "risk_category",
         F.when(F.col("reductions") <= low_threshold_2030, "low")
-        .when((F.col("reductions") > low_threshold_2030) & (F.col("reductions") <= high_threshold_2030), "medium")
-        .otherwise("high")
+        .when(
+            (F.col("reductions") > low_threshold_2030)
+            & (F.col("reductions") <= high_threshold_2030),
+            "medium",
+        )
+        .otherwise("high"),
     )
 
     df_2050 = df_2050.withColumn(
         "risk_category",
         F.when(F.col("reductions") <= low_threshold_2050, "low")
-        .when((F.col("reductions") > low_threshold_2050) & (F.col("reductions") <= high_threshold_2050), "medium")
-        .otherwise("high")
+        .when(
+            (F.col("reductions") > low_threshold_2050)
+            & (F.col("reductions") <= high_threshold_2050),
+            "medium",
+        )
+        .otherwise("high"),
     )
 
     # Joining the two dataframes together
@@ -736,39 +879,49 @@ def sector_profile_compute(input_sector_profile_ledger_x):
 
     combined_df = combined_df.withColumn(
         "benchmark_group",
-        F.lower(F.concat_ws("_", F.col("scenario_type"),
-                F.col("scenario_name"), F.col("year")))
+        F.lower(
+            F.concat_ws(
+                "_", F.col("scenario_type"), F.col("scenario_name"), F.col("year")
+            )
+        ),
     )
     # Rename specific columns
     combined_df = combined_df.withColumnsRenamed(
-        {"reference_product_name": "product_name", "reductions": "profile_ranking"})
+        {"reference_product_name": "product_name", "reductions": "profile_ranking"}
+    )
 
     return combined_df
 
 
 def sector_profile_upstream_compute(input_sector_profile_ledger_upstream_x):
     # Splitting the dataframe based on year
-    df_2030 = input_sector_profile_ledger_upstream_x.filter(
-        F.col("input_year") == 2030)
-    df_2050 = input_sector_profile_ledger_upstream_x.filter(
-        F.col("input_year") == 2050)
+    df_2030 = input_sector_profile_ledger_upstream_x.filter(F.col("input_year") == 2030)
+    df_2050 = input_sector_profile_ledger_upstream_x.filter(F.col("input_year") == 2050)
 
     # Setting different thresholds for each dataframe
-    low_threshold_2030, high_threshold_2030 = 1/9, 1/3  # thresholds for 2030
-    low_threshold_2050, high_threshold_2050 = 2/9, 2/3   # thresholds for 2050
+    low_threshold_2030, high_threshold_2030 = 1 / 9, 1 / 3  # thresholds for 2030
+    low_threshold_2050, high_threshold_2050 = 2 / 9, 2 / 3  # thresholds for 2050
 
     df_2030 = df_2030.withColumn(
         "risk_category",
         F.when(F.col("input_reductions") <= low_threshold_2030, "low")
-        .when((F.col("input_reductions") > low_threshold_2030) & (F.col("input_reductions") <= high_threshold_2030), "medium")
-        .otherwise("high")
+        .when(
+            (F.col("input_reductions") > low_threshold_2030)
+            & (F.col("input_reductions") <= high_threshold_2030),
+            "medium",
+        )
+        .otherwise("high"),
     )
 
     df_2050 = df_2050.withColumn(
         "risk_category",
         F.when(F.col("input_reductions") <= low_threshold_2050, "low")
-        .when((F.col("input_reductions") > low_threshold_2050) & (F.col("input_reductions") <= high_threshold_2050), "medium")
-        .otherwise("high")
+        .when(
+            (F.col("input_reductions") > low_threshold_2050)
+            & (F.col("input_reductions") <= high_threshold_2050),
+            "medium",
+        )
+        .otherwise("high"),
     )
 
     # Joining the two dataframes together
@@ -776,89 +929,123 @@ def sector_profile_upstream_compute(input_sector_profile_ledger_upstream_x):
 
     combined_df = combined_df.withColumn(
         "benchmark_group",
-        F.lower(F.concat_ws("_", F.col("input_scenario_type"),
-                F.col("input_scenario_name"), F.col("input_year")))
+        F.lower(
+            F.concat_ws(
+                "_",
+                F.col("input_scenario_type"),
+                F.col("input_scenario_name"),
+                F.col("input_year"),
+            )
+        ),
     )
     # Rename specific columns
     combined_df = combined_df.withColumnsRenamed(
-        {"input_reductions": "profile_ranking"})
+        {"input_reductions": "profile_ranking"}
+    )
 
     return combined_df
 
 
 def ei_geography_checker(upstream_data):
     # Filter the rows with row number <= 2
-    check_input_data = upstream_data.filter(
-        F.col("row_num") <= 2).drop("row_num")
+    check_input_data = upstream_data.filter(F.col("row_num") <= 2).drop("row_num")
     # Reset the index
     check_input_data = check_input_data.withColumn(
-        "index", F.monotonically_increasing_id()).drop("index")
+        "index", F.monotonically_increasing_id()
+    ).drop("index")
 
-    check_different_geo_at_same_priority = check_input_data[check_input_data["input_priority"] == 16].dropDuplicates(
-        subset=["input_activity_uuid_product_uuid", "input_geography"])
+    check_different_geo_at_same_priority = check_input_data[
+        check_input_data["input_priority"] == 16
+    ].dropDuplicates(subset=["input_activity_uuid_product_uuid", "input_geography"])
 
     # Check if any input product belongs to different geographies at the same priority
-    if check_different_geo_at_same_priority.dropDuplicates(["input_activity_uuid_product_uuid"]).count() != check_different_geo_at_same_priority.count():
+    if (
+        check_different_geo_at_same_priority.dropDuplicates(
+            ["input_activity_uuid_product_uuid"]
+        ).count()
+        != check_different_geo_at_same_priority.count()
+    ):
         raise ValueError(
-            "Any input product should not belong to different geographies at the same priority `16`")
+            "Any input product should not belong to different geographies at the same priority `16`"
+        )
 
-    check_multiple_NA = check_input_data.filter(F.col("input_priority").isNull(
-    )).dropDuplicates(subset=["input_activity_uuid_product_uuid", "input_product_name"])
+    check_multiple_NA = check_input_data.filter(
+        F.col("input_priority").isNull()
+    ).dropDuplicates(subset=["input_activity_uuid_product_uuid", "input_product_name"])
 
-    if check_multiple_NA.dropDuplicates(["input_activity_uuid_product_uuid"]).count() != check_multiple_NA.count():
+    if (
+        check_multiple_NA.dropDuplicates(["input_activity_uuid_product_uuid"]).count()
+        != check_multiple_NA.count()
+    ):
         raise ValueError(
-            "Any input product should not have more than one NA input priority for an NA input geography")
+            "Any input product should not have more than one NA input priority for an NA input geography"
+        )
 
 
 def ledger_geography_checker(upstream_data):
     # Filter the rows with row number <= 2
-    check_input_data = upstream_data.filter(
-        F.col("row_num") <= 2).drop("row_num")
+    check_input_data = upstream_data.filter(F.col("row_num") <= 2).drop("row_num")
     # Reset the index
     check_input_data = check_input_data.withColumn(
-        "index", F.monotonically_increasing_id()).drop("index")
+        "index", F.monotonically_increasing_id()
+    ).drop("index")
 
-    check_different_geo_at_same_priority = check_input_data[check_input_data["input_priority"] == 16].dropDuplicates(
-        subset=["input_tiltledger_id", "input_geography"])
+    check_different_geo_at_same_priority = check_input_data[
+        check_input_data["input_priority"] == 16
+    ].dropDuplicates(subset=["input_tiltledger_id", "input_geography"])
 
     # Check if any input product belongs to different geographies at the same priority
-    if check_different_geo_at_same_priority.dropDuplicates(["input_tiltledger_id"]).count() != check_different_geo_at_same_priority.count():
+    if (
+        check_different_geo_at_same_priority.dropDuplicates(
+            ["input_tiltledger_id"]
+        ).count()
+        != check_different_geo_at_same_priority.count()
+    ):
         raise ValueError(
-            "Any input product should not belong to different geographies at the same priority `16`")
+            "Any input product should not belong to different geographies at the same priority `16`"
+        )
 
-    if check_multiple_NA.dropDuplicates(["input_tiltledger_id"]).count() != check_multiple_NA.count():
+    if (
+        check_multiple_NA.dropDuplicates(["input_tiltledger_id"]).count()
+        != check_multiple_NA.count()
+    ):
         raise ValueError(
-            "Any input product should not have more than one NA input priority for an NA input geography")
+            "Any input product should not have more than one NA input priority for an NA input geography"
+        )
 
 
 def transition_risk_compute(transition_risk_product_level_data):
     trs_product = transition_risk_product_level_data.withColumn(
         "transition_risk_score",
         F.when(
-            F.isnull(transition_risk_product_level_data["average_profile_ranking"]) | F.isnull(
-                transition_risk_product_level_data["profile_ranking"]),
-            None
+            F.isnull(transition_risk_product_level_data["average_profile_ranking"])
+            | F.isnull(transition_risk_product_level_data["profile_ranking"]),
+            None,
         ).otherwise(
-            (transition_risk_product_level_data["average_profile_ranking"] +
-             transition_risk_product_level_data["profile_ranking"]) / 2
-        )
+            (
+                transition_risk_product_level_data["average_profile_ranking"]
+                + transition_risk_product_level_data["profile_ranking"]
+            )
+            / 2
+        ),
     ).withColumn(
         "benchmark_group",
         F.when(
-            F.isnull(transition_risk_product_level_data["average_profile_ranking"]) | F.isnull(
-                transition_risk_product_level_data["profile_ranking"]),
-            None
+            F.isnull(transition_risk_product_level_data["average_profile_ranking"])
+            | F.isnull(transition_risk_product_level_data["profile_ranking"]),
+            None,
         ).otherwise(
             F.concat_ws(
-                "_", transition_risk_product_level_data["scenario_year"], transition_risk_product_level_data["benchmark_group"])
-        )
+                "_",
+                transition_risk_product_level_data["scenario_year"],
+                transition_risk_product_level_data["benchmark_group"],
+            )
+        ),
     )
     trs_product = trs_product.withColumn(
         "transition_risk_score",
-        F.when(
-            (trs_product["transition_risk_score"] < 0), 0
-        ).when(
-            (trs_product["transition_risk_score"] > 1), 1
-        ).otherwise(trs_product["transition_risk_score"])
+        F.when((trs_product["transition_risk_score"] < 0), 0)
+        .when((trs_product["transition_risk_score"] > 1), 1)
+        .otherwise(trs_product["transition_risk_score"]),
     )
     return trs_product
