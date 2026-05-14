@@ -63,8 +63,14 @@ elif os.getenv("GRECAPTCHA_TOKEN"):
 # generate_table_datamodel('playergamesubstitionsgamedata_datamodel')
 # generate_table_datamodel('teamdata_datamodel')
 
-# LAYER 1: Atomic per-game tables
-generate_table_enriched('gamecompetitiveness_enriched')
+# ============================================================================
+# ENRICHED LAYER - Generate all enriched tables
+# ============================================================================
+
+# LAYER 1: Atomic per-game tables (no dependencies on other enriched tables)
+print("\n" + "="*80)
+print("LAYER 1: Atomic Per-Game Tables")
+print("="*80)
 generate_table_enriched('playergameplusminus_enriched')
 generate_table_enriched('playergameimpact_enriched')
 generate_table_enriched('playergamequarterstats_enriched')
@@ -75,19 +81,35 @@ generate_table_enriched('teamgamequarterperformance_enriched')
 generate_table_enriched('teamgame_shots_enriched')
 generate_table_enriched('fiveplayer_combinations_enriched')
 generate_table_enriched('threeplayer_combinations_enriched')
+generate_table_enriched('gamecompetitiveness_enriched')
 
-# LAYER 2: Wide per-game tables
+# LAYER 2: Wide per-game tables (depend on Layer 1)
+print("\n" + "="*80)
+print("LAYER 2: Wide Per-Game Tables")
+print("="*80)
 generate_table_enriched('playergameanalytics_enriched')
 
-# LAYER 3: Aggregated tables
+# LAYER 3: Aggregated season tables (depend on atomic tables)
+print("\n" + "="*80)
+print("LAYER 3: Aggregated Season Tables")
+print("="*80)
 generate_table_enriched('playerstatssummary_enriched')
 generate_table_enriched('player2ptsummary_enriched')
 generate_table_enriched('player3ptsummary_enriched')
 generate_table_enriched('playerplusminus_enriched')
-generate_table_enriched('playeranalytics_enriched')
 generate_table_enriched('teamstatssummary_enriched')
 generate_table_enriched('opponentsstatssummary_enriched')
 generate_table_enriched('opponentstrendssummary_enriched')
 generate_table_enriched('teamhomeawaysplits_enriched')
 generate_table_enriched('teamquarterperformance_enriched')
+
+# LAYER 4: Wide aggregated tables (depend on Layer 3)
+print("\n" + "="*80)
+print("LAYER 4: Wide Aggregated Tables")
+print("="*80)
+generate_table_enriched('playeranalytics_enriched')
 generate_table_enriched('teamanalytics_enriched')
+
+print("\n" + "="*80)
+print("ALL ENRICHED TABLES GENERATED SUCCESSFULLY")
+print("="*80)

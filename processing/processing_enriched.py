@@ -323,13 +323,14 @@ def generate_table_enriched(table_name: str) -> bool:
         player_clutch = CustomDF("playerclutchperformance_enriched")
         player_clutch.data = player_clutch.data.with_columns([
             pl.when(pl.col("is_clutch_game") == True).then(1).otherwise(0).alias("is_clutch_int"),
-            pl.when(pl.col("game_result") == "Win").then(1).otherwise(0).alias("clutch_win_int")
+            pl.when(pl.col("game_result") == "Win").then(1).otherwise(0).alias("clutch_win_int"),
+            (pl.col("clutch_2pt_made") * 2 + pl.col("clutch_3pt_made") * 3).alias("clutch_points")
         ])
         player_clutch_avg = player_clutch.custom_groupby(
             ["player_uuid", "season"],
             pl.sum("is_clutch_int").cast(pl.Int64).alias("total_clutch_games"),
             pl.mean("clutch_points").alias("avg_clutch_points"),
-            pl.mean("clutch_shooting_pct").alias("avg_clutch_shooting_pct"),
+            pl.mean("clutch_fg_pct").alias("avg_clutch_shooting_pct"),
             pl.sum("clutch_win_int").cast(pl.Int64).alias("clutch_wins"),
         )
 
@@ -885,6 +886,8 @@ def generate_table_enriched(table_name: str) -> bool:
         substitutions_q = CustomDF("playergamesubstitionsgamedata_datamodel")
         player_data = CustomDF("playerdata_datamodel")
 
+        print("\n>> Building player game quarter statistics with margin impact...")
+
         raw_game_data.data = (
             raw_game_data.data
             .select([
@@ -895,115 +898,215 @@ def generate_table_enriched(table_name: str) -> bool:
             .filter(pl.col("player_uuid").is_not_null())
         )
 
-        # Last cumulative score per (game_uuid, quarter) for regulation quarters
-        quarter_scores = (
-            gameteamscores.data
-            .filter(pl.col("quarter").is_between(1, 4))
-            .sort(["game_uuid", "quarter", "minuteAbsolute"])
-            .group_by(["game_uuid", "quarter", "home_team_uuid", "away_team_uuid"], maintain_order=True)
-            .agg(
-                pl.last("home_score").alias("home_score_end"),
-                pl.last("away_score").alias("away_score_end"),
-            )
-            .sort(["game_uuid", "quarter"])
-            .with_columns([
-                pl.col("home_score_end").shift(1).over("game_uuid").fill_null(0).alias("home_score_start"),
-                pl.col("away_score_end").shift(1).over("game_uuid").fill_null(0).alias("away_score_start"),
-            ])
-            .with_columns(
-                (pl.col("home_score_end") - pl.col("home_score_start") >
-                 pl.col("away_score_end") - pl.col("away_score_start")).alias("home_won_quarter")
-            )
-            .select(["game_uuid", "quarter", "home_team_uuid", "home_won_quarter"])
-        )
-
-        subs_data = substitutions_q.data.select(["game_uuid", "player_uuid", "type", "minute_absolute"])
-
-        # Q1: use the game-level starting flag from raw data
-        q1_starts = raw_game_data.data.select([
-            pl.lit(1).cast(pl.Int64).alias("quarter"),
-            pl.col("game_uuid"),
-            pl.col("player_uuid"),
-            pl.col("starting").alias("starts_quarter"),
-        ])
-
-        quarter_starts_frames = [q1_starts]
-
-        # Q2-Q4: last sub-event at or before each quarter's start boundary determines on-court status;
-        # players with no events before the boundary inherit the game-level starting flag.
-        for q, boundary in [(2, 10), (3, 20), (4, 30)]:
-            last_sub_type = (
-                subs_data
-                .filter(pl.col("minute_absolute") <= boundary)
-                .sort("minute_absolute")
-                .group_by(["game_uuid", "player_uuid"], maintain_order=True)
-                .agg(pl.last("type").alias("last_sub_type"))
-            )
-            qn_starts = (
-                raw_game_data.data
-                .join(last_sub_type, on=["game_uuid", "player_uuid"], how="left")
-                .with_columns(
-                    pl.when(pl.col("last_sub_type").is_not_null())
-                    .then(pl.col("last_sub_type") == "IN_TYPE")
-                    .otherwise(pl.col("starting"))
-                    .alias("starts_quarter")
-                )
-                .select([
-                    pl.lit(q).cast(pl.Int64).alias("quarter"),
-                    pl.col("game_uuid"),
-                    pl.col("player_uuid"),
-                    pl.col("starts_quarter"),
-                ])
-            )
-            quarter_starts_frames.append(qn_starts)
-
-        # Keep only rows where the player starts the quarter
-        player_quarter_starts = (
-            pl.concat(quarter_starts_frames)
-            .filter(pl.col("starts_quarter") == True)
-        )
-
-        # Resolve team_uuid for each player
+        # Get player team mappings
         player_teams_q = (
             player_data.data
             .unique(subset=["player_uuid"], keep="first")
             .select(["player_uuid", "team_uuid"])
         )
-        player_quarter_starts = player_quarter_starts.join(
-            player_teams_q, on="player_uuid", how="left"
+
+        # Prepare substitution data with point_diff
+        subs_data = substitutions_q.data.select([
+            "game_uuid", "player_uuid", "type", "minute_absolute", "point_diff"
+        ]).filter(
+            pl.col("minute_absolute").is_not_null() &
+            pl.col("type").is_not_null()
         )
 
-        # Determine whether each quarter was won by the starting player's team
-        player_quarter_starts = (
-            player_quarter_starts
-            .join(quarter_scores, on=["game_uuid", "quarter"], how="left")
-            .with_columns(
+        # Join subs with player teams to get team perspective
+        subs_with_teams = subs_data.join(player_teams_q, on="player_uuid", how="left")
+
+        # Define quarter boundaries
+        quarter_boundaries = {
+            1: (0, 10),
+            2: (10, 20),
+            3: (20, 30),
+            4: (30, 40)
+        }
+
+        all_quarter_stats = []
+
+        for quarter, (start_min, end_min) in quarter_boundaries.items():
+            print(f"  Processing quarter {quarter}...")
+
+            # Determine who started this quarter (on court at start_min boundary)
+            if quarter == 1:
+                quarter_starters = raw_game_data.data.select([
+                    pl.lit(quarter).cast(pl.Int64).alias("quarter"),
+                    pl.col("game_uuid"),
+                    pl.col("player_uuid"),
+                    pl.col("starting").alias("starts_quarter"),
+                ])
+            else:
+                # For Q2-Q4, check last substitution AT OR BEFORE quarter start
+                last_sub_before_q = (
+                    subs_data
+                    .filter(pl.col("minute_absolute") <= start_min)
+                    .sort("minute_absolute")
+                    .group_by(["game_uuid", "player_uuid"], maintain_order=True)
+                    .agg(pl.last("type").alias("last_sub_type"))
+                )
+                quarter_starters = (
+                    raw_game_data.data
+                    .join(last_sub_before_q, on=["game_uuid", "player_uuid"], how="left")
+                    .with_columns(
+                        pl.when(pl.col("last_sub_type").is_not_null())
+                        .then(pl.col("last_sub_type") == "IN_TYPE")
+                        .otherwise(pl.col("starting"))
+                        .alias("starts_quarter")
+                    )
+                    .select([
+                        pl.lit(quarter).cast(pl.Int64).alias("quarter"),
+                        pl.col("game_uuid"),
+                        pl.col("player_uuid"),
+                        pl.col("starts_quarter"),
+                    ])
+                )
+
+            # Get first OUT in this quarter (only for players who STARTED the quarter)
+            first_out_in_quarter = (
+                subs_with_teams
+                .filter(
+                    (pl.col("minute_absolute") > start_min) &
+                    (pl.col("minute_absolute") <= end_min) &
+                    (pl.col("type") == "OUT_TYPE")
+                )
+                .group_by(["game_uuid", "player_uuid", "team_uuid"])
+                .agg([
+                    pl.col("minute_absolute").min().alias("first_out_minute"),
+                    pl.col("point_diff").first().alias("point_diff_at_out")
+                ])
+            )
+
+            # Get margin at quarter start from game scores
+            # IMPORTANT: Must sort by minuteAbsolute before taking last() to get chronologically last score
+            scores_at_quarter_start = (
+                gameteamscores.data
+                .filter(pl.col("minuteAbsolute") <= start_min)
+                .sort("minuteAbsolute")
+                .group_by("game_uuid", maintain_order=True)
+                .agg([
+                    pl.last("home_score").alias("home_score_start"),
+                    pl.last("away_score").alias("away_score_start"),
+                    pl.last("home_team_uuid").alias("home_team_uuid"),
+                    pl.last("away_team_uuid").alias("away_team_uuid")
+                ])
+                .with_columns([
+                    (pl.col("home_score_start") - pl.col("away_score_start")).alias("home_margin_start")
+                ])
+            )
+
+            # Join starters with their OUT data and quarter start scores
+            quarter_stats = (
+                quarter_starters
+                .join(player_teams_q, on="player_uuid", how="left")
+                .join(first_out_in_quarter, on=["game_uuid", "player_uuid", "team_uuid"], how="left")
+                .join(scores_at_quarter_start, on="game_uuid", how="left")
+            )
+
+            # Calculate margin at quarter start from team perspective
+            quarter_stats = quarter_stats.with_columns([
                 pl.when(pl.col("team_uuid") == pl.col("home_team_uuid"))
-                .then(pl.col("home_won_quarter"))
-                .otherwise(~pl.col("home_won_quarter"))
-                .alias("won_quarter")
-            )
+                .then(pl.col("home_margin_start"))
+                .otherwise(-pl.col("home_margin_start"))
+                .alias("team_margin_at_quarter_start")
+            ])
+
+            # Calculate margin impact and minutes ONLY FOR STARTERS
+            quarter_stats = quarter_stats.with_columns([
+                # Margin impact: only calculated if player started the quarter
+                pl.when(pl.col("starts_quarter") & pl.col("point_diff_at_out").is_not_null())
+                .then(pl.col("point_diff_at_out") - pl.col("team_margin_at_quarter_start"))
+                .otherwise(None)
+                .alias("margin_change_until_out"),
+
+                # Minutes played:
+                # - If started and got subbed out: minute_OUT - quarter_start
+                # - If started and never subbed out: full quarter (end_min - start_min)
+                # - If didn't start: 0
+                pl.when(pl.col("starts_quarter") & pl.col("first_out_minute").is_not_null())
+                .then((pl.col("first_out_minute") - start_min).cast(pl.Float64))
+                .when(pl.col("starts_quarter") & pl.col("first_out_minute").is_null())
+                .then(pl.lit(end_min - start_min).cast(pl.Float64))
+                .otherwise(0.0)
+                .alias("minutes_until_out")
+            ])
+
+            # Select relevant columns
+            quarter_stats_final = quarter_stats.select([
+                "game_uuid",
+                "player_uuid",
+                "quarter",
+                "starts_quarter",
+                "first_out_minute",
+                "margin_change_until_out",
+                "minutes_until_out"
+            ])
+
+            all_quarter_stats.append(quarter_stats_final)
+
+        # Combine all quarters
+        combined_quarters = pl.concat(all_quarter_stats)
+
+        # Pivot to get per-quarter columns
+        final_stats = combined_quarters.pivot(
+            values=["starts_quarter", "first_out_minute", "margin_change_until_out", "minutes_until_out"],
+            index=["game_uuid", "player_uuid"],
+            columns="quarter",
+            aggregate_function="first"
         )
 
-        # Aggregate per (game_uuid, player_uuid)
-        player_quarter_agg = (
-            player_quarter_starts
-            .group_by(["game_uuid", "player_uuid"])
-            .agg([
-                pl.len().alias("quarters_started"),
-                pl.col("won_quarter").sum().cast(pl.Int64).alias("quarters_won_when_starting"),
-            ])
-            .with_columns(
-                pl.when(pl.col("quarters_started") > 0)
-                .then(pl.col("quarters_won_when_starting").cast(pl.Float64) / pl.col("quarters_started"))
-                .otherwise(None)
-                .alias("quarter_win_rate_when_starting")
+        # Rename columns
+        final_stats = final_stats.rename({
+            "starts_quarter_1": "started_q1",
+            "starts_quarter_2": "started_q2",
+            "starts_quarter_3": "started_q3",
+            "starts_quarter_4": "started_q4",
+            "first_out_minute_1": "q1_subbed_out_minute",
+            "first_out_minute_2": "q2_subbed_out_minute",
+            "first_out_minute_3": "q3_subbed_out_minute",
+            "first_out_minute_4": "q4_subbed_out_minute",
+            "margin_change_until_out_1": "q1_margin_impact",
+            "margin_change_until_out_2": "q2_margin_impact",
+            "margin_change_until_out_3": "q3_margin_impact",
+            "margin_change_until_out_4": "q4_margin_impact",
+            "minutes_until_out_1": "q1_minutes_played",
+            "minutes_until_out_2": "q2_minutes_played",
+            "minutes_until_out_3": "q3_minutes_played",
+            "minutes_until_out_4": "q4_minutes_played"
+        })
+
+        # Calculate summary statistics
+        final_stats = final_stats.with_columns([
+            # Count quarters started
+            (pl.col("started_q1").cast(pl.Int64) +
+             pl.col("started_q2").cast(pl.Int64) +
+             pl.col("started_q3").cast(pl.Int64) +
+             pl.col("started_q4").cast(pl.Int64)).alias("total_quarters_started"),
+
+            # Average margin impact when starting
+            pl.when(
+                (pl.col("started_q1") & pl.col("q1_margin_impact").is_not_null()) |
+                (pl.col("started_q2") & pl.col("q2_margin_impact").is_not_null()) |
+                (pl.col("started_q3") & pl.col("q3_margin_impact").is_not_null()) |
+                (pl.col("started_q4") & pl.col("q4_margin_impact").is_not_null())
             )
-            .with_columns(pl.col("quarters_started").cast(pl.Int64))
-        )
+            .then(
+                pl.concat_list([
+                    pl.when(pl.col("started_q1")).then(pl.col("q1_margin_impact")),
+                    pl.when(pl.col("started_q2")).then(pl.col("q2_margin_impact")),
+                    pl.when(pl.col("started_q3")).then(pl.col("q3_margin_impact")),
+                    pl.when(pl.col("started_q4")).then(pl.col("q4_margin_impact"))
+                ]).list.mean()
+            )
+            .otherwise(None)
+            .alias("avg_margin_impact_when_starting")
+        ])
+
+        print(f">> Found {len(final_stats)} player game quarter stat records")
 
         playergamequarterstats_enriched = CustomDF(
-            "playergamequarterstats_enriched", initial_df=player_quarter_agg
+            "playergamequarterstats_enriched", initial_df=final_stats
         )
         playergamequarterstats_enriched.write_table()
 
@@ -1243,24 +1346,36 @@ def generate_table_enriched(table_name: str) -> bool:
                 "defensive_points_on_court",
                 "offensive_points_per_minute",
                 "defensive_points_per_minute",
-                "quarters_started",
-                "quarters_won_when_starting",
-                "quarter_win_rate_when_starting",
+                "started_q1",
+                "started_q2",
+                "started_q3",
+                "started_q4",
+                "q1_subbed_out_minute",
+                "q2_subbed_out_minute",
+                "q3_subbed_out_minute",
+                "q4_subbed_out_minute",
+                "q1_margin_impact",
+                "q2_margin_impact",
+                "q3_margin_impact",
+                "q4_margin_impact",
+                "q1_minutes_played",
+                "q2_minutes_played",
+                "q3_minutes_played",
+                "q4_minutes_played",
+                "total_quarters_started",
+                "avg_margin_impact_when_starting",
                 "twopoint_locations",
                 "threepoint_locations",
                 "is_clutch_game",
-                "fourth_quarter_points",
-                "fourth_quarter_minutes",
+                "clutch_minutes_played",
                 "clutch_points",
-                "clutch_minutes",
-                "clutch_ft_made",
-                "clutch_ft_attempted",
-                "clutch_two_made",
-                "clutch_two_attempted",
-                "clutch_three_made",
-                "clutch_three_attempted",
-                "clutch_shooting_pct",
+                "clutch_2pt_made",
+                "clutch_2pt_attempted",
+                "clutch_3pt_made",
+                "clutch_3pt_attempted",
+                "clutch_fg_pct",
                 "game_result",
+                "was_on_court_during_clutch",
             ]
         ).custom_distinct()
 
@@ -2029,114 +2144,179 @@ def generate_table_enriched(table_name: str) -> bool:
         ).write_table()
 
     elif table_name == "playerclutchperformance_enriched":
+        from collections import defaultdict
+
         gamedata = CustomDF("gamedata_datamodel")
         gamescores = CustomDF("gameteamscoresdata_datamodel")
-        playergamestats = CustomDF("playergamestatsdata_datamodel")
-        playergameshotsdata = CustomDF("playergameshotsdata_datamodel")
+        substitutions = CustomDF("playergamesubstitionsgamedata_datamodel")
+        shots = CustomDF("playergameshotsdata_datamodel")
         playerdata = CustomDF("playerdata_datamodel")
         teamgamestats = CustomDF("teamgamestatsdata_datamodel")
+        raw_game_data = CustomDF("playergamedata_raw")
 
-        print("\n>> Building player clutch performance data...")
-
-        # Get game metadata
-        game_metadata = gamedata.custom_select([
-            "game_uuid", "season", "game_time", "team_uuid"
-        ]).custom_distinct()
-        game_metadata.data = game_metadata.data.with_columns(
-            pl.col("game_time").cast(pl.Date).alias("game_date")
-        )
-
-        # Determine clutch games (Q4 margin <= 5 at any point after minute 30)
-        gamescores_q4 = gamescores.custom_select([
-            "game_uuid", "minuteAbsolute", "home_score", "away_score"
+        # STEP 1: Identify clutch minutes (score within 5 points in last 5 minutes)
+        clutch_minutes = gamescores.custom_select([
+            "game_uuid", "minuteAbsolute", "home_score", "away_score", "home_team_uuid", "away_team_uuid"
         ])
-        gamescores_q4.data = gamescores_q4.data.filter(
-            pl.col("minuteAbsolute") >= 30
+        clutch_minutes.data = clutch_minutes.data.filter(
+            pl.col("minuteAbsolute") >= 35
         ).with_columns(
             (pl.col("home_score") - pl.col("away_score")).abs().alias("margin")
+        ).filter(
+            pl.col("margin") <= 5
         )
 
-        clutch_games = gamescores_q4.data.group_by("game_uuid").agg(
-            (pl.col("margin").min() <= 5).alias("is_clutch_game")
+        clutch_minutes = clutch_minutes.custom_select([
+            "game_uuid", "minuteAbsolute", "home_team_uuid", "away_team_uuid"
+        ]).custom_distinct()
+
+        clutch_games = clutch_minutes.custom_select(["game_uuid"]).custom_distinct()
+
+        # STEP 2: Reconstruct on-court lineups at each clutch minute
+
+        # Get starting lineups from raw data
+        starting_lineups = raw_game_data.data.select([
+            pl.col("playerUuid").alias("player_uuid"),
+            pl.col("idMatchIntern").alias("game_uuid"),
+            pl.col("starting"),
+        ]).filter(
+            (pl.col("player_uuid").is_not_null()) &
+            (pl.col("starting") == True)
         )
 
-        # Get player's team
-        player_teams = playerdata.custom_select(["player_uuid", "team_uuid"])
-        player_teams.data = player_teams.data.unique(subset=["player_uuid"], keep="first")
+        # Get player teams with date ranges
+        player_teams = playerdata.custom_select(["player_uuid", "team_uuid", "from_date", "to_date"]).custom_distinct()
 
-        # Join player stats with game data
-        clutch_stats = playergamestats.custom_join(
-            game_metadata.custom_select(["game_uuid", "season", "game_date"]).custom_distinct(),
-            custom_on=["game_uuid"],
-            custom_how="left"
-        ).custom_join(
-            player_teams,
-            custom_on=["player_uuid"],
-            custom_how="left"
-        )
+        # Filter substitutions to clutch games only
+        clutch_subs = substitutions.data.filter(
+            pl.col("game_uuid").is_in(clutch_games.data["game_uuid"]) &
+            pl.col("minute_absolute").is_not_null() &
+            pl.col("type").is_not_null()
+        ).sort(["game_uuid", "minute_absolute"])
 
-        # Add clutch game flag
-        clutch_stats.data = clutch_stats.data.join(
-            clutch_games,
-            on="game_uuid",
-            how="left"
-        ).with_columns(
-            pl.col("is_clutch_game").fill_null(False)
-        )
+        # Build on-court player mapping for each clutch minute
+        clutch_player_minutes = []
 
-        # Get Q4 stats (simplified - using proportional estimate from total stats)
-        clutch_stats.data = clutch_stats.data.with_columns([
-            (pl.col("points") * 0.25).cast(pl.Int64).alias("fourth_quarter_points"),
-            (pl.col("minutes_played") * 0.25).alias("fourth_quarter_minutes"),
+        for game_uuid in clutch_games.data["game_uuid"].to_list():
+            game_clutch_minutes = clutch_minutes.data.filter(
+                pl.col("game_uuid") == game_uuid
+            ).sort("minuteAbsolute")
+
+            game_subs = clutch_subs.filter(pl.col("game_uuid") == game_uuid)
+            game_starters = starting_lineups.filter(pl.col("game_uuid") == game_uuid)
+
+            # Initialize with starters
+            on_court = set(game_starters["player_uuid"].to_list())
+
+            # For each clutch minute, determine who was on court
+            for minute_row in game_clutch_minutes.iter_rows(named=True):
+                minute = minute_row["minuteAbsolute"]
+
+                # Apply all substitutions up to this minute
+                relevant_subs = game_subs.filter(pl.col("minute_absolute") <= minute)
+                on_court_at_minute = set(game_starters["player_uuid"].to_list())
+
+                for sub_row in relevant_subs.iter_rows(named=True):
+                    if sub_row["type"] == "IN_TYPE":
+                        on_court_at_minute.add(sub_row["player_uuid"])
+                    elif sub_row["type"] == "OUT_TYPE":
+                        on_court_at_minute.discard(sub_row["player_uuid"])
+
+                # Record each player on court at this clutch minute
+                for player_uuid in on_court_at_minute:
+                    clutch_player_minutes.append({
+                        "game_uuid": game_uuid,
+                        "player_uuid": player_uuid,
+                        "clutch_minute": minute,
+                        "home_team_uuid": minute_row["home_team_uuid"],
+                        "away_team_uuid": minute_row["away_team_uuid"],
+                    })
+
+        # STEP 3: Join shots with clutch minutes and on-court players
+        # Work with raw polars DataFrames for intermediate calculations
+
+        clutch_player_minutes_df = pl.DataFrame(clutch_player_minutes)
+
+        # Convert period/minute in shots to absolute minute (Period 4 minute 1-10 = absolute minute 31-40)
+        shots_q4 = shots.custom_select([
+            "game_uuid", "player_uuid", "shot_type", "period", "minute", "outcome"
+        ])
+        shots_q4.data = shots_q4.data.filter(
+            (pl.col("period") == 4) &
+            pl.col("minute").is_not_null() &
+            pl.col("minute") >= 5
+        ).with_columns([
+            (30 + pl.col("minute")).alias("clutch_minute")
         ])
 
-        # Clutch time = last 5 minutes when close (simplified: 12.5% of game)
-        clutch_stats.data = clutch_stats.data.with_columns([
-            pl.when(pl.col("is_clutch_game"))
-            .then((pl.col("points") * 0.125).cast(pl.Int64))
-            .otherwise(0)
-            .alias("clutch_points"),
-            pl.when(pl.col("is_clutch_game"))
-            .then(pl.col("minutes_played") * 0.125)
-            .otherwise(0.0)
-            .alias("clutch_minutes"),
-            pl.when(pl.col("is_clutch_game"))
-            .then((pl.col("ft_made") * 0.125).cast(pl.Int64))
-            .otherwise(0)
-            .alias("clutch_ft_made"),
-            pl.when(pl.col("is_clutch_game"))
-            .then((pl.col("ft_attempted") * 0.125).cast(pl.Int64))
-            .otherwise(0)
-            .alias("clutch_ft_attempted"),
-            pl.when(pl.col("is_clutch_game"))
-            .then((pl.col("two_made") * 0.125).cast(pl.Int64))
-            .otherwise(0)
-            .alias("clutch_two_made"),
-            pl.when(pl.col("is_clutch_game"))
-            .then((pl.col("two_attempted") * 0.125).cast(pl.Int64))
-            .otherwise(0)
-            .alias("clutch_two_attempted"),
-            pl.when(pl.col("is_clutch_game"))
-            .then((pl.col("three_made") * 0.125).cast(pl.Int64))
-            .otherwise(0)
-            .alias("clutch_three_made"),
-            pl.when(pl.col("is_clutch_game"))
-            .then((pl.col("three_attempted") * 0.125).cast(pl.Int64))
-            .otherwise(0)
-            .alias("clutch_three_attempted"),
+        # Join shots with clutch player minutes (both are raw polars DataFrames)
+        clutch_shots_df = clutch_player_minutes_df.join(
+            shots_q4.data,
+            on=["game_uuid", "player_uuid", "clutch_minute"],
+            how="inner"
+        )
+
+        # STEP 4: Aggregate clutch stats per player-game
+
+        # Calculate minutes played in clutch time per player-game
+        clutch_minutes_played_df = clutch_player_minutes_df.group_by(
+            ["game_uuid", "player_uuid"]
+        ).agg([
+            pl.col("clutch_minute").n_unique().cast(pl.Float64).alias("clutch_minutes_played"),
         ])
 
-        # Calculate clutch shooting percentage
-        clutch_stats.data = clutch_stats.data.with_columns([
+        # Aggregate shot statistics
+        clutch_shot_stats_df = clutch_shots_df.group_by(
+            ["game_uuid", "player_uuid"]
+        ).agg([
+            pl.when(pl.col("shot_type").str.contains("2"))
+              .then(1).sum().alias("clutch_2pt_attempted"),
             pl.when(
-                (pl.col("clutch_ft_attempted") + pl.col("clutch_two_attempted") +
-                 pl.col("clutch_three_attempted")) > 0
-            ).then(
-                (pl.col("clutch_ft_made") + pl.col("clutch_two_made") + pl.col("clutch_three_made")).cast(pl.Float64) /
-                (pl.col("clutch_ft_attempted") + pl.col("clutch_two_attempted") + pl.col("clutch_three_attempted"))
-            ).otherwise(None)
-            .alias("clutch_shooting_pct")
+                pl.col("shot_type").str.contains("2") &
+                (pl.col("outcome").str.to_uppercase() == "MADE")
+            ).then(1).sum().alias("clutch_2pt_made"),
+            pl.when(pl.col("shot_type").str.contains("3"))
+              .then(1).sum().alias("clutch_3pt_attempted"),
+            pl.when(
+                pl.col("shot_type").str.contains("3") &
+                (pl.col("outcome").str.to_uppercase() == "MADE")
+            ).then(1).sum().alias("clutch_3pt_made"),
+        ]).with_columns([
+            pl.col("clutch_2pt_attempted").fill_null(0).cast(pl.Int64),
+            pl.col("clutch_2pt_made").fill_null(0).cast(pl.Int64),
+            pl.col("clutch_3pt_attempted").fill_null(0).cast(pl.Int64),
+            pl.col("clutch_3pt_made").fill_null(0).cast(pl.Int64),
         ])
+
+        # Combine minutes and shots
+        clutch_combined_df = clutch_minutes_played_df.join(
+            clutch_shot_stats_df,
+            on=["game_uuid", "player_uuid"],
+            how="left"
+        ).with_columns([
+            pl.col("clutch_2pt_attempted").fill_null(0).cast(pl.Int64),
+            pl.col("clutch_2pt_made").fill_null(0).cast(pl.Int64),
+            pl.col("clutch_3pt_attempted").fill_null(0).cast(pl.Int64),
+            pl.col("clutch_3pt_made").fill_null(0).cast(pl.Int64),
+        ]).with_columns([
+            # Calculate clutch points (2PT made * 2 + 3PT made * 3)
+            (pl.col("clutch_2pt_made") * 2 + pl.col("clutch_3pt_made") * 3).cast(pl.Int64).alias("clutch_points"),
+            # Calculate field goal percentage
+            pl.when(
+                (pl.col("clutch_2pt_attempted") + pl.col("clutch_3pt_attempted")) > 0
+            ).then(
+                (pl.col("clutch_2pt_made") + pl.col("clutch_3pt_made")).cast(pl.Float64) /
+                (pl.col("clutch_2pt_attempted") + pl.col("clutch_3pt_attempted"))
+            ).otherwise(None).alias("clutch_fg_pct")
+        ])
+
+        # Get game metadata (ensure unique by game_uuid only)
+        game_metadata = gamedata.custom_select([
+            "game_uuid", "season", "game_time"
+        ])
+        game_metadata.data = game_metadata.data.unique(subset=["game_uuid"], keep="first").with_columns(
+            pl.col("game_time").cast(pl.Date).alias("game_date")
+        )
 
         # Determine game result (Win/Loss)
         team_results = teamgamestats.custom_join(
@@ -2162,34 +2342,67 @@ def generate_table_enriched(table_name: str) -> bool:
             .then(pl.lit("Win"))
             .otherwise(pl.lit("Loss"))
             .alias("game_result")
-        ).select(["game_uuid", "team_uuid", "game_result"])
+        )
 
-        clutch_stats.data = clutch_stats.data.join(
+        team_results = team_results.custom_select(["game_uuid", "team_uuid", "game_result"])
+
+        # Join everything together using raw polars joins for the intermediate result
+        # First join game metadata to get game_date
+        clutch_final_df = clutch_combined_df.join(
+            game_metadata.data,
+            on="game_uuid",
+            how="left"
+        )
+
+        # Then join player_teams filtered by date range
+        clutch_final_df = clutch_final_df.join(
+            player_teams.data,
+            on="player_uuid",
+            how="left"
+        )
+
+        # Finally join team results
+        clutch_final_df = clutch_final_df.join(
             team_results.data,
             on=["game_uuid", "team_uuid"],
             how="left"
         )
 
-        # Select final columns
-        clutch_stats = clutch_stats.custom_select([
-            "player_uuid", "game_uuid", "season", "game_date", "is_clutch_game",
-            "fourth_quarter_points", "fourth_quarter_minutes", "clutch_points",
-            "clutch_minutes", "clutch_ft_made", "clutch_ft_attempted",
-            "clutch_two_made", "clutch_two_attempted", "clutch_three_made",
-            "clutch_three_attempted", "clutch_shooting_pct", "game_result"
+        # Add clutch game flag and was_on_court flag
+        clutch_final_df = clutch_final_df.with_columns([
+            pl.lit(True).alias("is_clutch_game"),
+            pl.lit(True).alias("was_on_court_during_clutch"),
         ])
 
-        print(f">> Found {len(clutch_stats.data)} player clutch performance records")
+        # Select final columns
+        clutch_final_df = clutch_final_df.select([
+            "player_uuid",
+            "game_uuid",
+            "season",
+            "game_date",
+            "is_clutch_game",
+            "clutch_minutes_played",
+            "clutch_points",
+            "clutch_2pt_made",
+            "clutch_2pt_attempted",
+            "clutch_3pt_made",
+            "clutch_3pt_attempted",
+            "clutch_fg_pct",
+            "game_result",
+            "was_on_court_during_clutch",
+        ]).unique(subset=["game_uuid", "player_uuid"], keep="first")
 
         CustomDF(
             "playerclutchperformance_enriched",
-            initial_df=clutch_stats.data
+            initial_df=clutch_final_df
         ).write_table()
 
     elif table_name == "teamgamequarterperformance_enriched":
         gamedata = CustomDF("gamedata_datamodel")
         gamescores = CustomDF("gameteamscoresdata_datamodel")
         teamdata = CustomDF("teamdata_datamodel")
+        substitutions = CustomDF("playergamesubstitionsgamedata_datamodel")
+        playerdata = CustomDF("playerdata_datamodel")
 
         print("\n>> Building team game quarter performance data...")
 
@@ -2339,6 +2552,76 @@ def generate_table_enriched(table_name: str) -> bool:
             how="left"
         ).drop("team_short_name_right")
 
+        # Calculate first substitution timing per quarter per team
+        print(">> Calculating first substitution timing per quarter...")
+
+        # Get player-team mappings
+        player_teams = playerdata.custom_select(["player_uuid", "team_uuid"]).custom_distinct()
+
+        # Join substitutions with player teams
+        subs_with_teams = substitutions.data.join(
+            player_teams.data,
+            on="player_uuid",
+            how="left"
+        ).filter(
+            pl.col("team_uuid").is_not_null() &
+            pl.col("minute_absolute").is_not_null() &
+            pl.col("type").is_not_null()
+        )
+
+        # Join with game scores to get quarter info
+        subs_with_scores = subs_with_teams.join(
+            gamescores.data.select(["game_uuid", "quarter", "minuteAbsolute", "home_team_uuid", "away_team_uuid"]),
+            left_on=["game_uuid", "minute_absolute"],
+            right_on=["game_uuid", "minuteAbsolute"],
+            how="left"
+        ).filter(pl.col("quarter").is_not_null())
+
+        # Calculate first OUT substitution per team per quarter
+        first_sub_per_quarter = subs_with_scores.filter(
+            pl.col("type") == "OUT_TYPE"
+        ).group_by(["game_uuid", "team_uuid", "quarter"]).agg([
+            pl.col("minute_absolute").min().alias("first_sub_minute"),
+            pl.col("point_diff").first().alias("point_diff_at_first_sub")
+        ])
+
+        # Determine team perspective (positive diff = winning, negative = losing)
+        first_sub_per_quarter = first_sub_per_quarter.with_columns([
+            pl.when(pl.col("point_diff_at_first_sub") > 0)
+            .then(pl.lit(True))
+            .when(pl.col("point_diff_at_first_sub") < 0)
+            .then(pl.lit(False))
+            .otherwise(None)
+            .alias("was_winning_at_first_sub")
+        ])
+
+        # Pivot by quarter
+        sub_timing_pivoted = first_sub_per_quarter.pivot(
+            values=["first_sub_minute", "was_winning_at_first_sub"],
+            index=["game_uuid", "team_uuid"],
+            columns="quarter",
+            aggregate_function="first"
+        )
+
+        # Rename columns
+        sub_timing_pivoted = sub_timing_pivoted.rename({
+            "first_sub_minute_1": "q1_first_sub_minute",
+            "first_sub_minute_2": "q2_first_sub_minute",
+            "first_sub_minute_3": "q3_first_sub_minute",
+            "first_sub_minute_4": "q4_first_sub_minute",
+            "was_winning_at_first_sub_1": "q1_winning_at_first_sub",
+            "was_winning_at_first_sub_2": "q2_winning_at_first_sub",
+            "was_winning_at_first_sub_3": "q3_winning_at_first_sub",
+            "was_winning_at_first_sub_4": "q4_winning_at_first_sub"
+        })
+
+        # Join substitution timing data with quarter performance
+        quarter_final = quarter_final.join(
+            sub_timing_pivoted,
+            on=["game_uuid", "team_uuid"],
+            how="left"
+        )
+
         # Select final columns
         quarter_final = quarter_final.select([
             "game_uuid", "team_uuid", "team_name", "team_short_name", "opponent_uuid",
@@ -2348,7 +2631,11 @@ def generate_table_enriched(table_name: str) -> bool:
             "quarter_3_points_allowed", "quarter_4_points_allowed",
             "quarter_1_margin", "quarter_2_margin", "quarter_3_margin", "quarter_4_margin",
             "quarters_won", "quarters_lost", "quarters_tied",
-            "largest_lead_q1", "largest_lead_q2", "largest_lead_q3", "largest_lead_q4"
+            "largest_lead_q1", "largest_lead_q2", "largest_lead_q3", "largest_lead_q4",
+            "q1_first_sub_minute", "q1_winning_at_first_sub",
+            "q2_first_sub_minute", "q2_winning_at_first_sub",
+            "q3_first_sub_minute", "q3_winning_at_first_sub",
+            "q4_first_sub_minute", "q4_winning_at_first_sub"
         ])
 
         print(f">> Found {len(quarter_final)} team game quarter performance records")
