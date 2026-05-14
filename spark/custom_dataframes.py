@@ -72,8 +72,10 @@ class CustomDF(DataReader):
 
         if self._df.select(self._df.colRegex(r"`^map_.*`")).columns:
             self._df = self._df.withColumnRenamed(
-                self._df.select(self._df.colRegex(r"`^map_.*`")).columns[0], f'map_{self._name}_{self._salt}')
-            self.map_col = f'map_{self._name}_{self._salt}'
+                self._df.select(self._df.colRegex(r"`^map_.*`")).columns[0],
+                f"map_{self._name}_{self._salt}",
+            )
+            self.map_col = f"map_{self._name}_{self._salt}"
         else:
             self.map_col = None
 
@@ -155,7 +157,7 @@ class CustomDF(DataReader):
             raise ValueError("The head of the table does not match.")
 
         # Check if all of the rows are unique in the table
-        
+
         if self._df.count() != self._df.distinct().count():
             # The format of the DataFrame does not match the table definition
             raise ValueError("Not all rows in the table are unqiue")
@@ -207,7 +209,6 @@ class CustomDF(DataReader):
         return data_frame
 
     def check_blocking_issues(self):
-
         blocking_checks = self._schema["quality_checks"]
 
         calculate_blocking_issues(self._df, blocking_checks)
@@ -352,8 +353,10 @@ class CustomDF(DataReader):
         ).withColumnRenamed("RecordID", "target_RecordID")
 
         # Explode the map column to be able to write the array format to a standard sql table
-        dump_df = dump_df.select('*', F.explode(self.map_col).alias('source_table_name', 'source_RecordID_list')
-                                 ).select('*', F.explode(F.col('source_RecordID_list')).alias('source_RecordID'))
+        dump_df = dump_df.select(
+            "*",
+            F.explode(self.map_col).alias("source_table_name", "source_RecordID_list"),
+        ).select("*", F.explode(F.col("source_RecordID_list")).alias("source_RecordID"))
 
         # Select only the columns 'source_RecordID', 'source_table_name', 'target_RecordID', and 'target_table_name'
         dump_df = dump_df.select(
@@ -421,18 +424,27 @@ class CustomDF(DataReader):
         copy_other_df = custom_other.data
         copy_df = copy_self_df.join(copy_other_df, on=custom_on, how=custom_how)
         copy_df = copy_df.withColumn(
-            'map_temp', F.create_map().cast('map<string,array<String>>'))
-        copy_df = copy_df.withColumn(self.map_col, F.coalesce(
-            F.col(self.map_col), F.col('map_temp')))
-        copy_df = copy_df.withColumn(custom_other.map_col, F.coalesce(
-            F.col(custom_other.map_col), F.col('map_temp')))
-        copy_df = copy_df.drop(F.col('map_temp'))
-        copy_df = copy_df.withColumn(
-            self.map_col, F.map_zip_with(
-                self.map_col, custom_other.map_col, lambda k, v1, v2: F.when(v1.isNull(), v2).when(v2.isNull(), v1).otherwise(F.array_union(v1, v2)))
+            "map_temp", F.create_map().cast("map<string,array<String>>")
         )
-        copy_df = copy_df.drop(
-            F.col(custom_other.map_col))
+        copy_df = copy_df.withColumn(
+            self.map_col, F.coalesce(F.col(self.map_col), F.col("map_temp"))
+        )
+        copy_df = copy_df.withColumn(
+            custom_other.map_col,
+            F.coalesce(F.col(custom_other.map_col), F.col("map_temp")),
+        )
+        copy_df = copy_df.drop(F.col("map_temp"))
+        copy_df = copy_df.withColumn(
+            self.map_col,
+            F.map_zip_with(
+                self.map_col,
+                custom_other.map_col,
+                lambda k, v1, v2: F.when(v1.isNull(), v2)
+                .when(v2.isNull(), v1)
+                .otherwise(F.array_union(v1, v2)),
+            ),
+        )
+        copy_df = copy_df.drop(F.col(custom_other.map_col))
 
         return CustomDF(
             self._name,
@@ -478,17 +490,28 @@ class CustomDF(DataReader):
         copy_df = copy_df.fillna(replace_na_value)
         cols = [F.col(col) for col in self._df.columns if not col.startswith("map_")]
 
-        copy_df = copy_df.select(*cols, F.explode(
-            F.col(self.map_col)).alias('exploded_table', 'exploded_list'))\
-            .select(*cols, F.col('exploded_table'), F.explode(F.col('exploded_list')).alias('exploded'))
+        copy_df = copy_df.select(
+            *cols,
+            F.explode(F.col(self.map_col)).alias("exploded_table", "exploded_list"),
+        ).select(
+            *cols,
+            F.col("exploded_table"),
+            F.explode(F.col("exploded_list")).alias("exploded"),
+        )
 
-        copy_df = copy_df\
-            .groupBy(cols + ['exploded_table'])\
-            .agg(F.collect_set(F.col('exploded')).alias('exploded_fold'))\
-            .groupBy(cols)\
-            .agg(F.collect_list(F.col('exploded_table')).alias('table_list'), F.collect_list(F.col('exploded_fold')).alias('fold_list'))\
-            .withColumn(self.map_col, F.map_from_arrays(F.col('table_list'), F.col('fold_list')))\
+        copy_df = (
+            copy_df.groupBy(cols + ["exploded_table"])
+            .agg(F.collect_set(F.col("exploded")).alias("exploded_fold"))
+            .groupBy(cols)
+            .agg(
+                F.collect_list(F.col("exploded_table")).alias("table_list"),
+                F.collect_list(F.col("exploded_fold")).alias("fold_list"),
+            )
+            .withColumn(
+                self.map_col, F.map_from_arrays(F.col("table_list"), F.col("fold_list"))
+            )
             .select(*cols, F.col(self.map_col))
+        )
 
         copy_df = copy_df.replace(replace_na_value, None)
         return CustomDF(
@@ -499,32 +522,61 @@ class CustomDF(DataReader):
             self._history,
         )
 
-    def custom_average(self, groupby_columns: list, average_column: str) -> 'CustomDF':
-
+    def custom_average(self, groupby_columns: list, average_column: str) -> "CustomDF":
         copy_df = self._df
 
         average_df = copy_df.groupBy(groupby_columns).agg(
-            F.avg(F.col(average_column)).alias(average_column))
+            F.avg(F.col(average_column)).alias(average_column)
+        )
 
-        copy_df = copy_df.select(*groupby_columns, F.explode(
-            F.col(self.map_col)).alias('exploded_table', 'exploded_list'))\
-            .select(*groupby_columns, F.col('exploded_table'), F.explode(F.col('exploded_list')).alias('exploded'))
+        copy_df = copy_df.select(
+            *groupby_columns,
+            F.explode(F.col(self.map_col)).alias("exploded_table", "exploded_list"),
+        ).select(
+            *groupby_columns,
+            F.col("exploded_table"),
+            F.explode(F.col("exploded_list")).alias("exploded"),
+        )
 
-        copy_df = copy_df\
-            .groupBy(groupby_columns + ['exploded_table'])\
-            .agg(F.collect_set(F.col('exploded')).alias('exploded_fold'))\
-            .groupBy(groupby_columns)\
-            .agg(F.collect_list(F.col('exploded_table')).alias('table_list'), F.collect_list(F.col('exploded_fold')).alias('fold_list'))\
-            .withColumn(self.map_col, F.map_from_arrays(F.col('table_list'), F.col('fold_list')))\
+        copy_df = (
+            copy_df.groupBy(groupby_columns + ["exploded_table"])
+            .agg(F.collect_set(F.col("exploded")).alias("exploded_fold"))
+            .groupBy(groupby_columns)
+            .agg(
+                F.collect_list(F.col("exploded_table")).alias("table_list"),
+                F.collect_list(F.col("exploded_fold")).alias("fold_list"),
+            )
+            .withColumn(
+                self.map_col, F.map_from_arrays(F.col("table_list"), F.col("fold_list"))
+            )
             .select(*groupby_columns, F.col(self.map_col))
+        )
 
-        copy_df = average_df.alias('average_df')\
-            .join(copy_df.alias('copy_df'), on=[F.col('average_df.'+column) == F.col('copy_df.'+column) for column in groupby_columns], how='inner')\
-            .select([F.col('average_df.'+column) for column in average_df.columns]+[F.col('copy_df.'+self.map_col)])
+        copy_df = (
+            average_df.alias("average_df")
+            .join(
+                copy_df.alias("copy_df"),
+                on=[
+                    F.col("average_df." + column) == F.col("copy_df." + column)
+                    for column in groupby_columns
+                ],
+                how="inner",
+            )
+            .select(
+                [F.col("average_df." + column) for column in average_df.columns]
+                + [F.col("copy_df." + self.map_col)]
+            )
+        )
 
-        return CustomDF(self._name, self._spark_session, copy_df, self._partition_name, self._history)
+        return CustomDF(
+            self._name,
+            self._spark_session,
+            copy_df,
+            self._partition_name,
+            self._history,
+        )
 
-    def custom_groupby(self, groupby_columns: list, *arguments) -> 'CustomDF':
+    def custom_groupby(self, groupby_columns: list, *arguments) -> "CustomDF":
         """
         Performs a custom groupby operation on the DataFrame.
 
@@ -544,25 +596,54 @@ class CustomDF(DataReader):
 
         group_df = copy_df.groupBy(groupby_columns).agg(*arguments)
 
-        copy_df = copy_df.select(*groupby_columns, F.explode(
-            F.col(self.map_col)).alias('exploded_table', 'exploded_list'))\
-            .select(*groupby_columns, F.col('exploded_table'), F.explode(F.col('exploded_list')).alias('exploded'))
+        copy_df = copy_df.select(
+            *groupby_columns,
+            F.explode(F.col(self.map_col)).alias("exploded_table", "exploded_list"),
+        ).select(
+            *groupby_columns,
+            F.col("exploded_table"),
+            F.explode(F.col("exploded_list")).alias("exploded"),
+        )
 
-        copy_df = copy_df\
-            .groupBy(groupby_columns + ['exploded_table'])\
-            .agg(F.collect_set(F.col('exploded')).alias('exploded_fold'))\
-            .groupBy(groupby_columns)\
-            .agg(F.collect_list(F.col('exploded_table')).alias('table_list'), F.collect_list(F.col('exploded_fold')).alias('fold_list'))\
-            .withColumn(self.map_col, F.map_from_arrays(F.col('table_list'), F.col('fold_list')))\
+        copy_df = (
+            copy_df.groupBy(groupby_columns + ["exploded_table"])
+            .agg(F.collect_set(F.col("exploded")).alias("exploded_fold"))
+            .groupBy(groupby_columns)
+            .agg(
+                F.collect_list(F.col("exploded_table")).alias("table_list"),
+                F.collect_list(F.col("exploded_fold")).alias("fold_list"),
+            )
+            .withColumn(
+                self.map_col, F.map_from_arrays(F.col("table_list"), F.col("fold_list"))
+            )
             .select(*groupby_columns, F.col(self.map_col))
+        )
 
-        copy_df = group_df.alias('group_df')\
-            .join(copy_df.alias('copy_df'), on=[F.col('group_df.'+column).eqNullSafe(F.col('copy_df.'+column)) for column in groupby_columns], how='inner')\
-            .select([F.col('group_df.'+column) for column in group_df.columns]+[F.col('copy_df.'+self.map_col)])
+        copy_df = (
+            group_df.alias("group_df")
+            .join(
+                copy_df.alias("copy_df"),
+                on=[
+                    F.col("group_df." + column).eqNullSafe(F.col("copy_df." + column))
+                    for column in groupby_columns
+                ],
+                how="inner",
+            )
+            .select(
+                [F.col("group_df." + column) for column in group_df.columns]
+                + [F.col("copy_df." + self.map_col)]
+            )
+        )
 
-        return CustomDF(self._name, self._spark_session, copy_df, self._partition_name, self._history)
+        return CustomDF(
+            self._name,
+            self._spark_session,
+            copy_df,
+            self._partition_name,
+            self._history,
+        )
 
-    def custom_union(self, custom_other: 'CustomDF'):
+    def custom_union(self, custom_other: "CustomDF"):
         """
         Unions the current CustomDF instance with another CustomDF instance.
 
@@ -573,26 +654,32 @@ class CustomDF(DataReader):
             CustomDF: A new CustomDF instance that is the result of the union.
         """
 
-        cols = [F.col(col)
-                for col in self._df.columns if col != self.map_col]
+        cols = [F.col(col) for col in self._df.columns if col != self.map_col]
 
         copy_df = custom_other.data
-        copy_df = copy_df.withColumnRenamed(
-            custom_other.map_col, self.map_col)
+        copy_df = copy_df.withColumnRenamed(custom_other.map_col, self.map_col)
         copy_df = self._df.unionAll(copy_df)
 
-        df = (
-            copy_df.select(*cols, F.explode(
-                F.col(self.map_col)).alias('exploded_table', 'exploded_list'))
-            .select(*cols, F.col('exploded_table'), F.explode(F.col('exploded_list')).alias('exploded'))
+        df = copy_df.select(
+            *cols,
+            F.explode(F.col(self.map_col)).alias("exploded_table", "exploded_list"),
+        ).select(
+            *cols,
+            F.col("exploded_table"),
+            F.explode(F.col("exploded_list")).alias("exploded"),
         )
 
         self._df = (
             df.groupBy(cols + ["exploded_table"])
             .agg(F.collect_set(F.col("exploded")).alias("exploded_fold"))
             .groupBy(cols)
-            .agg(F.collect_list(F.col('exploded_table')).alias('table_list'), F.collect_list(F.col('exploded_fold')).alias('fold_list'))
-            .withColumn(self.map_col, F.map_from_arrays(F.col('table_list'), F.col('fold_list')))
+            .agg(
+                F.collect_list(F.col("exploded_table")).alias("table_list"),
+                F.collect_list(F.col("exploded_fold")).alias("fold_list"),
+            )
+            .withColumn(
+                self.map_col, F.map_from_arrays(F.col("table_list"), F.col("fold_list"))
+            )
             .select(*cols, F.col(self.map_col))
         )
 
