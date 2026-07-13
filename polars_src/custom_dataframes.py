@@ -1,3 +1,4 @@
+from pathlib import Path
 from time import time
 import polars as pl
 
@@ -45,7 +46,7 @@ class CustomDF(DataReader):
         initial_df: pl.DataFrame = None,
         partition_name: str = "",
         history: str = "recent",
-        environment: str = "develop"
+        environment: str = "develop",
     ):
         self._name = table_name
         self._layer = table_name.split("_")[-1] + "_layer"
@@ -68,7 +69,7 @@ class CustomDF(DataReader):
 
         map_cols = [col for col in self._df.columns if col.startswith("map_")]
         if map_cols:
-            new_map_name = f'map_{self._name}_{self._salt}'
+            new_map_name = f"map_{self._name}_{self._salt}"
             self._df = self._df.rename({map_cols[0]: new_map_name})
             self.map_col = new_map_name
         else:
@@ -100,9 +101,7 @@ class CustomDF(DataReader):
         """
 
         # Read the already existing table
-        old_df = CustomDF(
-            self._name, None, self._partition_name, "complete"
-        )
+        old_df = CustomDF(self._name, None, self._partition_name, "complete")
 
         all_records = apply_scd_type_2(self._df, old_df.data)
 
@@ -126,16 +125,20 @@ class CustomDF(DataReader):
         """
         # Create an empty DataFrame with the table definition columns
         if self._schema["partition_column"]:
-            check_df = pl.DataFrame([[] for _ in self._schema['columns']],schema=self._schema['columns'])
+            check_df = pl.DataFrame(
+                [[] for _ in self._schema["columns"]], schema=self._schema["columns"]
+            )
             check_df = check_df.with_columns(
                 pl.lit(self._partition_name).alias(self._schema["partition_column"])
             )
         else:
-            check_df = pl.DataFrame([[] for _ in self._schema['columns']],schema=self._schema['columns'])
+            check_df = pl.DataFrame(
+                [[] for _ in self._schema["columns"]], schema=self._schema["columns"]
+            )
 
         try:
             # Union the empty DataFrame with the provided DataFrame
-            check_df = pl.concat([check_df,self._df])
+            check_df = pl.concat([check_df, self._df])
             check_df.glimpse()
         except Exception as e:
             # An exception occurred, indicating a format mismatch
@@ -145,18 +148,28 @@ class CustomDF(DataReader):
 
         # Compare the first row of the original DataFrame with the check DataFrame
         if (
-            not self._df.sort(pl.col("RecordID")).head().equals(check_df.sort(pl.col("RecordID")).head())
+            not self._df.sort(pl.col("RecordID"))
+            .head()
+            .equals(check_df.sort(pl.col("RecordID")).head())
         ):
             # The format of the DataFrame does not match the table definition
             raise ValueError("The head of the table does not match.")
 
-        # Check if all of the rows are unique in the table
-        
-        if len(self._df) != len(self._df.unique()):
-            # The format of the DataFrame does not match the table definition
-            raise ValueError("Not all rows in the table are unqiue")
+        # Check if all RecordIDs are unique (each version should have a unique RecordID)
+        # RecordID = SHA(all_columns + from_date) - represents a unique temporal version
+        # Duplicates indicate: same data + same start date appearing multiple times (data corruption)
+        initial_rows = len(self._df)
+        unique_record_count = len(self._df.select("RecordID").unique())
 
-        # Perform additional quality checks on specific columns
+        if initial_rows != unique_record_count:
+            # Deduplicate by RecordID, keeping first occurrence
+            # This handles cases where source data generation creates duplicates
+            self._df = self._df.unique(subset=["RecordID"], keep="first")
+            removed_dupes = initial_rows - len(self._df)
+            print(f"\nWARNING: Removed {removed_dupes} duplicate RecordID(s) from {self._name}")
+            print(f"  Original rows: {initial_rows}, After dedup: {len(self._df)}")
+
+        # Perform quality checks on specific columns (includes uniqueness check for active records)
         self.check_blocking_issues()
 
         return True
@@ -176,6 +189,7 @@ class CustomDF(DataReader):
             value represents the SHA-256 hash of the respective row's contents.
         """
         # Select all columns that are needed for the creation of a record ID
+        # Include from_date so each temporal version has a unique ID
         sha_columns = [
             pl.col(col_name)
             for col_name in self._df.columns
@@ -203,7 +217,6 @@ class CustomDF(DataReader):
         return data_frame
 
     def check_blocking_issues(self):
-
         blocking_checks = self._schema["quality_checks"]
 
         calculate_blocking_issues(self._df, blocking_checks)
@@ -253,6 +266,10 @@ class CustomDF(DataReader):
             partition_name=self._name,
             initial_df=monitoring_values_df,
         )
+        # Deduplicate entries before writing
+        complete_monitoring_partition_df.data = (
+            complete_monitoring_partition_df.data.unique()
+        )
         complete_monitoring_partition_df.write_table()
 
     def write_table(self):
@@ -280,14 +297,16 @@ class CustomDF(DataReader):
         self._df = self.add_record_id()
 
         # Since the map column is only available starting from the raw layer, we can not dump/write it when writing to the raw layer.
-        if [col for col in self._df.columns if col.startswith('map_')]:
+        if [col for col in self._df.columns if col.startswith("map_")]:
             self.dump_map_column()
 
         table_check = self.validate_table_format()
 
         if table_check:
             if self._schema["partition_column"]:
-                self._df.write_parquet(self._data_path,partition_by=self._schema["partition_column"])
+                self._df.write_parquet(
+                    self._data_path, partition_by=self._schema["partition_column"]
+                )
             else:
                 self._df.write_parquet(self._data_path)
         else:
@@ -309,38 +328,90 @@ class CustomDF(DataReader):
             None
         """
         # Filter the DataFrame to only include rows that are newly created. Only for the new rows we want to dump the new record traces.
-        dump_df = self._df.filter(pl.col("to_date") == pl.date(2099,12,31))
+        dump_df = self._df.filter(pl.col("to_date") == pl.date(2099, 12, 31))
 
         # Add a new column 'target_table_name' with the name of the table, and rename 'RecordID' to 'target_RecordID'
         dump_df = dump_df.with_columns(
             pl.lit(self._name).alias("target_table_name")
         ).rename({"RecordID": "target_RecordID"})
 
-        dump_df = dump_df.select([pl.col(self.map_col,),pl.col('target_table_name'),pl.col('target_RecordID')]).unnest(self.map_col)
+        dump_df = dump_df.select(
+            [
+                pl.col(
+                    self.map_col,
+                ),
+                pl.col("target_table_name"),
+                pl.col("target_RecordID"),
+            ]
+        ).unnest(self.map_col)
 
         write_df = None
 
         for source_table_col in dump_df.columns:
-            if not source_table_col.startswith('target_'):
-                temp_df = dump_df.select(pl.col(source_table_col),pl.col('target_table_name'),pl.col('target_RecordID')).explode(source_table_col).rename({source_table_col:'source_RecordID'}).with_columns(pl.lit(source_table_col).alias('source_table_name'))
+            if not source_table_col.startswith("target_"):
+                temp_df = (
+                    dump_df.select(
+                        pl.col(source_table_col),
+                        pl.col("target_table_name"),
+                        pl.col("target_RecordID"),
+                    )
+                    .explode(source_table_col)
+                    .rename({source_table_col: "source_RecordID"})
+                    .with_columns(pl.lit(source_table_col).alias("source_table_name"))
+                )
 
                 if write_df is not None:
-                    write_df = pl.concat([write_df.select(['source_RecordID','source_table_name','target_RecordID','target_table_name'])
-                                          ,temp_df.select(['source_RecordID','source_table_name','target_RecordID','target_table_name'])])
+                    write_df = pl.concat(
+                        [
+                            write_df.select(
+                                [
+                                    "source_RecordID",
+                                    "source_table_name",
+                                    "target_RecordID",
+                                    "target_table_name",
+                                ]
+                            ),
+                            temp_df.select(
+                                [
+                                    "source_RecordID",
+                                    "source_table_name",
+                                    "target_RecordID",
+                                    "target_table_name",
+                                ]
+                            ),
+                        ]
+                    )
                 else:
-                    write_df = temp_df.select(['source_RecordID','source_table_name','target_RecordID','target_table_name'])
+                    write_df = temp_df.select(
+                        [
+                            "source_RecordID",
+                            "source_table_name",
+                            "target_RecordID",
+                            "target_table_name",
+                        ]
+                    )
 
         # Read the existing record tracing table into a DataFrame
-        df = CustomDF('record_tracing',partition_name=self._name).data.select(['source_RecordID','source_table_name','target_RecordID','target_table_name'])
+        df = CustomDF("record_tracing", partition_name=self._name).data.select(
+            [
+                "source_RecordID",
+                "source_table_name",
+                "target_RecordID",
+                "target_table_name",
+            ]
+        )
 
         # Eliminate the duplicate records from dump_df
         write_df = write_df.unique()
 
         if df.height != 0:
-            write_df = pl.concat([write_df,df]).unique()
+            write_df = pl.concat([write_df, df]).unique()
 
         # Union the two DataFrames and write the result to the table, partitioned by the name of the table
-        write_df.write_parquet(fr'data\{self._env}\monitoring\record_tracing',partition_by='target_table_name')
+        write_df.write_parquet(
+            Path("data", self._env, "monitoring", "record_tracing"),
+            partition_by="target_table_name",
+        )
 
         # Drop the map column from the original DataFrame
         self._df = self._df.drop(pl.col(self.map_col))
@@ -357,10 +428,16 @@ class CustomDF(DataReader):
             None. The method updates the DataFrame in-place.
         """
         for column in column_list:
-            self._df = self._df.with_columns(column, pl.col(column).cast(data_type))
+            self._df = self._df.with_columns(pl.col(column).cast(data_type))
 
     def custom_join(
-        self, custom_other: "CustomDF", custom_on: str = None, custom_left_on: str = None, custom_right_on: str = None, custom_how: str = None
+        self,
+        custom_other: "CustomDF",
+        custom_on: str = None,
+        custom_left_on: str = None,
+        custom_right_on: str = None,
+        custom_how: str = None,
+        custom_suffix: str = "_right",
     ):
         """
         Joins the current CustomDF instance with another CustomDF instance based on the provided conditions.
@@ -385,27 +462,180 @@ class CustomDF(DataReader):
         copy_self_df = self._df
         copy_other_df = custom_other.data
         if custom_on:
-            copy_df = copy_self_df.join(copy_other_df, on=custom_on, how=custom_how)
+            copy_df = copy_self_df.join(
+                copy_other_df, on=custom_on, how=custom_how, suffix=custom_suffix
+            )
         elif custom_left_on is not None and custom_right_on is not None:
-            copy_df  = copy_self_df.join(copy_other_df, left_on=custom_left_on, right_on=custom_right_on, how=custom_how)
+            copy_df = copy_self_df.join(
+                copy_other_df,
+                left_on=custom_left_on,
+                right_on=custom_right_on,
+                how=custom_how,
+                suffix=custom_suffix,
+            )
         else:
             raise ValueError
 
-        self_df_struct_field = [key for key in copy_self_df.select(pl.col(self.map_col)).schema[self.map_col].to_schema()]
-        other_df_struct_field =  [key for key in copy_other_df.select(pl.col(custom_other.map_col)).schema[custom_other.map_col].to_schema()]
+        self_df_struct_field = [
+            key
+            for key in copy_self_df.select(pl.col(self.map_col))
+            .schema[self.map_col]
+            .to_schema()
+        ]
+        other_df_struct_field = [
+            key
+            for key in copy_other_df.select(pl.col(custom_other.map_col))
+            .schema[custom_other.map_col]
+            .to_schema()
+        ]
 
         total_struct_fields = list(set(self_df_struct_field + other_df_struct_field))
 
         for field in total_struct_fields:
             if field in self_df_struct_field and field not in other_df_struct_field:
-                copy_df = copy_df.with_columns(pl.col(self.map_col).struct.with_fields(pl.field(field).list.unique()).alias(self.map_col))
+                copy_df = copy_df.with_columns(
+                    pl.col(self.map_col)
+                    .struct.with_fields(pl.field(field).list.unique())
+                    .alias(self.map_col)
+                )
             elif not field in self_df_struct_field and field in other_df_struct_field:
-                copy_df = copy_df.with_columns(pl.col(self.map_col).struct.with_fields(pl.col(custom_other.map_col).struct.field(field).list.unique()).alias(self.map_col))
+                copy_df = copy_df.with_columns(
+                    pl.col(self.map_col)
+                    .struct.with_fields(
+                        pl.col(custom_other.map_col).struct.field(field).list.unique()
+                    )
+                    .alias(self.map_col)
+                )
             else:
-                copy_df = copy_df.with_columns(pl.col(self.map_col).struct.with_fields(pl.concat_list(pl.field(field),pl.col(custom_other.map_col).struct.field(field)).list.unique()).alias(self.map_col))
+                copy_df = copy_df.with_columns(
+                    pl.col(self.map_col)
+                    .struct.with_fields(
+                        pl.concat_list(
+                            pl.field(field),
+                            pl.col(custom_other.map_col).struct.field(field),
+                        ).list.unique()
+                    )
+                    .alias(self.map_col)
+                )
 
-        copy_df = copy_df.drop(
-            pl.col(custom_other.map_col))
+        copy_df = copy_df.drop(pl.col(custom_other.map_col))
+
+        return CustomDF(
+            self._name,
+            copy_df,
+            self._partition_name,
+            self._history,
+        )
+
+    def custom_join_asof(
+        self,
+        custom_other: "CustomDF",
+        custom_on: str = None,
+        custom_left_on_asof: str = None,
+        custom_right_on_asof: str = None,
+        custom_by: list = None,
+        custom_by_left: list = None,
+        custom_by_right: list = None,
+        custom_strategy: str = "backward",
+        custom_suffix: str = "_right",
+    ):
+        """
+        Performs an as-of join between the current CustomDF and another CustomDF, merging
+        lineage map columns in the same way as custom_join.
+
+        Both DataFrames must be sorted by the asof key column before calling this method.
+
+        Args:
+            custom_other (CustomDF): The right-hand CustomDF to join with.
+            custom_on (str, optional): Shared asof column name when it is the same in both
+                DataFrames. Mutually exclusive with custom_left_on_asof / custom_right_on_asof.
+            custom_left_on_asof (str, optional): Left-side asof column name when the column
+                has a different name on each side. Must be paired with custom_right_on_asof.
+            custom_right_on_asof (str, optional): Right-side asof column name. Must be paired
+                with custom_left_on_asof.
+            custom_by (list, optional): Column(s) used as an equi-join partitioning key on both
+                sides. Mutually exclusive with custom_by_left / custom_by_right.
+            custom_by_left (list, optional): Left-side equi-join partition columns.
+            custom_by_right (list, optional): Right-side equi-join partition columns.
+            custom_strategy (str): Match strategy: "backward" (default), "forward", or "nearest".
+            custom_suffix (str): Suffix for duplicate right-side column names. Defaults to "_right".
+
+        Returns:
+            CustomDF: A new CustomDF instance containing the joined data with merged lineage.
+        """
+        copy_self_df = self._df
+        copy_other_df = custom_other.data
+
+        # Resolve the asof key parameters
+        asof_kwargs = {}
+        if custom_on is not None:
+            asof_kwargs["on"] = custom_on
+        elif custom_left_on_asof is not None and custom_right_on_asof is not None:
+            asof_kwargs["left_on"] = custom_left_on_asof
+            asof_kwargs["right_on"] = custom_right_on_asof
+        else:
+            raise ValueError(
+                "Provide either custom_on or both custom_left_on_asof and custom_right_on_asof."
+            )
+
+        # Resolve the equality partition key parameters
+        if custom_by is not None:
+            asof_kwargs["by"] = custom_by
+        elif custom_by_left is not None and custom_by_right is not None:
+            asof_kwargs["by_left"] = custom_by_left
+            asof_kwargs["by_right"] = custom_by_right
+
+        copy_df = copy_self_df.join_asof(
+            copy_other_df,
+            **asof_kwargs,
+            strategy=custom_strategy,
+            suffix=custom_suffix,
+        )
+
+        # Merge lineage map columns — identical logic to custom_join
+        self_df_struct_field = [
+            key
+            for key in copy_self_df.select(pl.col(self.map_col))
+            .schema[self.map_col]
+            .to_schema()
+        ]
+        other_df_struct_field = [
+            key
+            for key in copy_other_df.select(pl.col(custom_other.map_col))
+            .schema[custom_other.map_col]
+            .to_schema()
+        ]
+
+        total_struct_fields = list(set(self_df_struct_field + other_df_struct_field))
+
+        for field in total_struct_fields:
+            if field in self_df_struct_field and field not in other_df_struct_field:
+                copy_df = copy_df.with_columns(
+                    pl.col(self.map_col)
+                    .struct.with_fields(pl.field(field).list.unique())
+                    .alias(self.map_col)
+                )
+            elif field not in self_df_struct_field and field in other_df_struct_field:
+                copy_df = copy_df.with_columns(
+                    pl.col(self.map_col)
+                    .struct.with_fields(
+                        pl.col(custom_other.map_col).struct.field(field).list.unique()
+                    )
+                    .alias(self.map_col)
+                )
+            else:
+                copy_df = copy_df.with_columns(
+                    pl.col(self.map_col)
+                    .struct.with_fields(
+                        pl.concat_list(
+                            pl.field(field),
+                            pl.col(custom_other.map_col).struct.field(field),
+                        ).list.unique()
+                    )
+                    .alias(self.map_col)
+                )
+
+        copy_df = copy_df.drop(pl.col(custom_other.map_col))
 
         return CustomDF(
             self._name,
@@ -451,20 +681,35 @@ class CustomDF(DataReader):
 
         copy_df = copy_df.unnest(self.map_col)
 
-        unnested_cols = copy_df.select(pl.exclude([col for col in self._df.columns])).columns
+        unnested_cols = copy_df.select(
+            pl.exclude([col for col in self._df.columns])
+        ).columns
 
         for list_col in unnested_cols:
             copy_df = copy_df.explode(list_col)
 
         group_expression = [pl.col(col).unique().alias(col) for col in unnested_cols]
 
-        copy_df = copy_df.group_by(*cols).agg(*group_expression).with_columns(pl.struct(unnested_cols).alias(self.map_col)).drop(*unnested_cols)
+        copy_df = (
+            copy_df.group_by(*cols)
+            .agg(*group_expression)
+            .with_columns(pl.struct(unnested_cols).alias(self.map_col))
+            .drop(*unnested_cols)
+        )
 
         for col in copy_df.columns:
             if copy_df.select(pl.col(col)).dtypes[0].is_numeric():
-                copy_df = copy_df.with_columns(pl.col(col).cast(pl.String).replace({replace_na_value:None}).cast(copy_df.select(pl.col(col)).dtypes[0]).alias(col))
+                copy_df = copy_df.with_columns(
+                    pl.col(col)
+                    .cast(pl.String)
+                    .replace({replace_na_value: None})
+                    .cast(copy_df.select(pl.col(col)).dtypes[0])
+                    .alias(col)
+                )
             elif copy_df.select(pl.col(col)).dtypes[0] == pl.String:
-                copy_df = copy_df.with_columns(pl.col(col).replace({replace_na_value:None}).alias(col))
+                copy_df = copy_df.with_columns(
+                    pl.col(col).replace({replace_na_value: None}).alias(col)
+                )
 
         return CustomDF(
             self._name,
@@ -473,7 +718,7 @@ class CustomDF(DataReader):
             self._history,
         )
 
-    def custom_groupby(self, groupby_columns: list, *arguments) -> 'CustomDF':
+    def custom_groupby(self, groupby_columns: list, *arguments) -> "CustomDF":
         """
         Performs a custom groupby operation on the DataFrame.
 
@@ -490,24 +735,33 @@ class CustomDF(DataReader):
         """
         copy_df = self._df
 
-        unnest_df = copy_df.select(groupby_columns+[self.map_col]).unnest(self.map_col)
+        unnest_df = copy_df.select(groupby_columns + [self.map_col]).unnest(
+            self.map_col
+        )
 
-        unnested_cols = unnest_df.select(pl.exclude([col for col in self._df.columns])).columns
+        unnested_cols = unnest_df.select(
+            pl.exclude([col for col in self._df.columns])
+        ).columns
 
         for list_col in unnested_cols:
             unnest_df = unnest_df.explode(list_col)
 
         group_expression = [pl.col(col).unique().alias(col) for col in unnested_cols]
 
-        unnest_df = unnest_df.group_by(groupby_columns).agg(*group_expression).with_columns(pl.struct(unnested_cols).alias(self.map_col)).drop(*unnested_cols)
+        unnest_df = (
+            unnest_df.group_by(groupby_columns)
+            .agg(*group_expression)
+            .with_columns(pl.struct(unnested_cols).alias(self.map_col))
+            .drop(*unnested_cols)
+        )
 
         group_df = copy_df.group_by(groupby_columns).agg(*arguments)
 
-        group_df = group_df.join(unnest_df,on=groupby_columns)
-        
+        group_df = group_df.join(unnest_df, on=groupby_columns)
+
         return CustomDF(self._name, group_df, self._partition_name, self._history)
 
-    def custom_union(self, custom_other: 'CustomDF'):
+    def custom_union(self, custom_other: "CustomDF"):
         """
         Unions the current CustomDF instance with another CustomDF instance.
 
@@ -518,24 +772,29 @@ class CustomDF(DataReader):
             CustomDF: A new CustomDF instance that is the result of the union.
         """
 
-        cols = [pl.col(col)
-                for col in self._df.columns if col != self.map_col]
+        cols = [pl.col(col) for col in self._df.columns if col != self.map_col]
 
         copy_df = custom_other.data
-        copy_df = copy_df.rename(
-            {custom_other.map_col: self.map_col})
-        copy_df = pl.concat([self._df, copy_df])
+        copy_df = copy_df.rename({custom_other.map_col: self.map_col})
+        copy_df = pl.concat([self._df, copy_df], how="vertical_relaxed")
 
         copy_df = copy_df.unnest(self.map_col)
 
-        unnested_cols = copy_df.select(pl.exclude([col for col in self._df.columns])).columns
+        unnested_cols = copy_df.select(
+            pl.exclude([col for col in self._df.columns])
+        ).columns
 
         for list_col in unnested_cols:
             copy_df = copy_df.explode(list_col)
 
         group_expression = [pl.col(col).unique().alias(col) for col in unnested_cols]
 
-        copy_df = copy_df.group_by(*cols).agg(*group_expression).with_columns(pl.struct(unnested_cols).alias(self.map_col)).drop(*unnested_cols)
+        copy_df = (
+            copy_df.group_by(*cols)
+            .agg(*group_expression)
+            .with_columns(pl.struct(unnested_cols).alias(self.map_col))
+            .drop(*unnested_cols)
+        )
 
         self._df = copy_df
 

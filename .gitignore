@@ -156,8 +156,9 @@ data/testing/monitoring
 data/testing/raw
 data/testing/enriched
 
-# Do not track main file
+# Do not track main, edges or analytics file
 main.py
-
+edges.txt
+analytics.py
 # Do not track vscode settings
 .vscode/
