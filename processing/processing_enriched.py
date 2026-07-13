@@ -314,9 +314,8 @@ def generate_table_enriched(table_name: str) -> bool:
 
         player_quarter_avg = player_quarter.custom_groupby(
             ["player_uuid", "season"],
-            pl.mean("quarters_started").alias("avg_quarters_started"),
-            pl.mean("quarters_won_when_starting").alias("avg_quarters_won_when_starting"),
-            pl.mean("quarter_win_rate_when_starting").alias("avg_quarter_win_rate"),
+            pl.mean("total_quarters_started").alias("avg_quarters_started"),
+            pl.mean("avg_margin_impact_when_starting").alias("avg_margin_impact_when_starting"),
         )
 
         # Aggregate clutch performance
@@ -324,7 +323,6 @@ def generate_table_enriched(table_name: str) -> bool:
         player_clutch.data = player_clutch.data.with_columns([
             pl.when(pl.col("is_clutch_game") == True).then(1).otherwise(0).alias("is_clutch_int"),
             pl.when(pl.col("game_result") == "Win").then(1).otherwise(0).alias("clutch_win_int"),
-            (pl.col("clutch_2pt_made") * 2 + pl.col("clutch_3pt_made") * 3).alias("clutch_points")
         ])
         player_clutch_avg = player_clutch.custom_groupby(
             ["player_uuid", "season"],
@@ -408,8 +406,7 @@ def generate_table_enriched(table_name: str) -> bool:
                 "avg_offensive_points_per_minute",
                 "avg_defensive_points_per_minute",
                 "avg_quarters_started",
-                "avg_quarters_won_when_starting",
-                "avg_quarter_win_rate",
+                "avg_margin_impact_when_starting",
                 "total_clutch_games",
                 "avg_clutch_points",
                 "avg_clutch_shooting_pct",
