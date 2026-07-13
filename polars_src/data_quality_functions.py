@@ -1,3 +1,4 @@
+from pathlib import Path
 import polars as pl
 from polars import DataFrame
 from typing import List, Dict, Any
@@ -373,7 +374,7 @@ def calculate_signalling_issues(
         elif check_types == "record has expected history":
             table_name = signalling_check.get("table_name")
             signalling_check["record_trace_table"] = pl.read_parquet(
-                rf"data\development\record_trace_table\table_name={table_name}"
+                Path("data", "development", "record_trace_table", f"table_name={table_name}")
             )
             valid_count = total_count - record_has_expected_history(
                 dataframe, **signalling_check
