@@ -1,3 +1,4 @@
+from pathlib import Path
 from time import time
 import polars as pl
 
@@ -408,7 +409,7 @@ class CustomDF(DataReader):
 
         # Union the two DataFrames and write the result to the table, partitioned by the name of the table
         write_df.write_parquet(
-            rf"data\{self._env}\monitoring\record_tracing",
+            Path("data", self._env, "monitoring", "record_tracing"),
             partition_by="target_table_name",
         )
 
